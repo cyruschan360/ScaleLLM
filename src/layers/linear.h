@@ -1,10 +1,11 @@
 #pragma once
 
+#include <glog/logging.h>
 #include <torch/torch.h>
 
-#include "common/logging.h"
 #include "model_loader/state_dict.h"
-#include "models/args.h"
+#include "model_parallel/parallel_args.h"
+#include "quantization/quant_args.h"
 
 namespace llm {
 
@@ -25,14 +26,14 @@ class ParallelLinearImpl : public torch::nn::Module {
   using TensorTransform = std::function<torch::Tensor(torch::Tensor)>;
   virtual void load_state_dict(const StateDict& /*state_dict*/,
                                TensorTransform /*transform_func*/) {
-    GLOG(FATAL) << "not implemented";
+    LOG(FATAL) << "not implemented";
   }
 
   // special load_state_dict for fused cases
   virtual void load_state_dict(
       const StateDict& /*state_dict*/,
       const std::vector<std::string_view>& /*prefixes*/) {
-    GLOG(FATAL) << "not implemented";
+    LOG(FATAL) << "not implemented";
   }
 };
 
@@ -48,18 +49,16 @@ class ColumnParallelLinear
                        int64_t out_features,
                        bool bias,
                        bool gather_output,
-                       const QuantizationArgs& quant_args,
+                       const QuantArgs& quant_args,
                        const ParallelArgs& parallel_args,
-                       torch::ScalarType dtype,
-                       const torch::Device& device);
+                       const torch::TensorOptions& options);
 
   ColumnParallelLinear(int64_t in_features,
                        int64_t out_features,
                        bool bias,
                        bool gather_output,
                        const ParallelArgs& parallel_args,
-                       torch::ScalarType dtype,
-                       const torch::Device& device);
+                       const torch::TensorOptions& options);
 };
 
 class RowParallelLinear : public torch::nn::ModuleHolder<ParallelLinearImpl> {
@@ -73,9 +72,8 @@ class RowParallelLinear : public torch::nn::ModuleHolder<ParallelLinearImpl> {
                     int64_t out_features,
                     bool bias,
                     bool input_is_parallelized,
-                    const QuantizationArgs& quant_args,
+                    const QuantArgs& quant_args,
                     const ParallelArgs& parallel_args,
-                    torch::ScalarType dtype,
-                    const torch::Device& device);
+                    const torch::TensorOptions& options);
 };
 }  // namespace llm

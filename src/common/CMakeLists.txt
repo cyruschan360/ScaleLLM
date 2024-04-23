@@ -5,43 +5,23 @@ cc_library(
   NAME 
     common
   HDRS
-    logging.h
+    macros.h
     metrics.h
     slice.h
+    tensor_helper.h
     concurrent_queue.h
-    executor.h
+    time.h
+    threadpool.h
     pretty_print.h
     json_reader.h
   SRCS
-    executor.cpp
+    time.cpp
+    threadpool.cpp
     pretty_print.cpp
     json_reader.cpp
   DEPS
     absl::strings
     prometheus-cpp::core
     nlohmann_json::nlohmann_json
-)
-
-cc_library(
-  NAME 
-    process_group
-  HDRS
-    process_group.h
-  SRCS
-    process_group.cpp
-  DEPS
-    torch
-    NCCL::nccl
-    glog::glog
-)
-
-cc_test(
-  NAME
-    process_group_test
-  SRCS
-    process_group_test.cpp
-  DEPS
-    :process_group
-    GTest::gtest_main
 )
 

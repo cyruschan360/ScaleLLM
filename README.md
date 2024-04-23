@@ -1,39 +1,17 @@
 # ScaleLLM: An efficient LLM Inference solution
-[![build and test](https://github.com/vectorch-ai/ScaleLLM/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/vectorch-ai/ScaleLLM/actions/workflows/build.yml) [![GitHub Repo stars](https://img.shields.io/github/stars/vectorch-ai/ScaleLLM?style=social)](https://github.com/vectorch-ai/ScaleLLM/stargazers)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) [![GitHub Repo stars](https://img.shields.io/github/stars/vectorch-ai/ScaleLLM?style=social)](https://github.com/vectorch-ai/ScaleLLM/stargazers) [![build and test](https://github.com/vectorch-ai/ScaleLLM/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/vectorch-ai/ScaleLLM/actions/workflows/build.yml) 
+
 
 [![Discord](https://dcbadge.vercel.app/api/server/PKe5gvBZfn)](https://discord.gg/PKe5gvBZfn)
 
+[ScaleLLM]() is a cutting-edge inference system engineered for large language models (LLMs), meticulously designed to meet the demands of production environments. It extends its support to a wide range of popular open-source models, including [Llama3](https://github.com/meta-llama/llama3), [Gemma](https://github.com/google-deepmind/gemma), Bloom, GPT-NeoX, and more. 
 
-> **Warning**<br />
-> ScaleLLM is currently in the active development stage and may not yet provide the optimal level of inference efficiency. We are fully dedicated to continuously enhancing its efficiency while also adding more features.
-
-
-In the coming weeks, we have exciting plans to focus on [**_speculative decoding_**](https://github.com/orgs/vectorch-ai/projects/1) and [**_stateful conversation_**](https://github.com/orgs/vectorch-ai/projects/2), alongside further kernel optimizations. We appreciate your understanding and look forward to delivering an even better solution.
+ScaleLLM is currently undergoing active development. We are fully committed to consistently enhancing its efficiency while also incorporating additional features. Feel free to explore our [**_Roadmap_**](https://github.com/vectorch-ai/ScaleLLM/issues/84) for more details.
 
 
-## Latest News:
-* [11/2023] - First [official release](https://github.com/vectorch-ai/ScaleLLM/releases/tag/v0.0.1) with support for popular open-source models.
-
-
-## Table of contents
-
-- [Overview](#overview)
-- [Get Started](#get-started)
-  - [Docker Container](#docker-container)
-  - [Docker Compose](#docker-compose)
-- [Usage Examples](#usage-examples)
-- [Supported Models](#supported-models)
-- [Quatization](#quatization)
-- [Limitations](#limitations)
-- [Contributing](#Contributing)
-- [Acknowledgements](#acknowledgements)
-- [License](#license)
-
-
-## Overview
-
-ScaleLLM is a cutting-edge inference system engineered for large language models (LLMs), meticulously designed to meet the demands of production environments. It extends its support to a wide range of popular open-source models, including Llama2, Bloom, GPT-NeoX, and more. 
+## News:
+* [03/2024] - [Advanced feature](https://github.com/vectorch-ai/ScaleLLM/releases/tag/v0.0.7) support for CUDA graph, [dynamic prefix cache](), [dynamic chunked prefill]() and [speculative decoding]().
+* [11/2023] - [First release](https://github.com/vectorch-ai/ScaleLLM/releases/tag/v0.0.1) with support for popular [open-source models](#supported-models).
 
 ## Key Features
 
@@ -44,43 +22,86 @@ ScaleLLM is a cutting-edge inference system engineered for large language models
 - [Customizable](): Offers flexibility for customization to meet your specific needs, and provides an easy way to add new models.
 - [Production Ready](): Engineered with production environments in mind, ScaleLLM is equipped with robust system monitoring and management features to ensure a seamless deployment experience.
 
+## Table of contents
+
+- [Supported Models](#supported-models)
+- [Get Started](#get-started)
+  - [ScaleLLM server](#scalellm-server)
+  - [Rest API Server](#rest-api-server)
+  - [Chatbot UI](#chatbot-ui)
+  - [Docker Compose](#docker-compose)
+- [Usage Examples](#usage-examples)
+- [Quantization](#quantization)
+- [Limitations](#limitations)
+- [Contributing](#Contributing)
+- [Acknowledgements](#acknowledgements)
+- [License](#license)
+
+## Supported Models
+
+|   Models   | Tensor Parallel | Quantization | Chat API | HF models examples |
+| :--------: | :-------------: | :----------: | :------: | :---------------------------:|
+|   Aquila   |       Yes       |     Yes      |    Yes   | [BAAI/Aquila-7B](https://huggingface.co/BAAI/Aquila-7B), [BAAI/AquilaChat-7B](https://huggingface.co/BAAI/AquilaChat-7B) |
+|   Bloom    |       Yes       |     Yes      |    No    | [bigscience/bloom](https://huggingface.co/bigscience/bloom) |
+|   Baichuan |       Yes       |     Yes      |    Yes   | [baichuan-inc/Baichuan2-7B-Chat](https://huggingface.co/baichuan-inc/Baichuan2-7B-Chat) |
+|   ChatGLM3 |       Yes       |     Yes      |    Yes   | [THUDM/chatglm3-6b](https://huggingface.co/THUDM/chatglm3-6b) |
+|   Gemma    |       Yes       |     Yes      |    Yes   | [google/gemma-2b](https://huggingface.co/google/gemma-2b) |
+|   GPT_j    |       Yes       |     Yes      |    No    | [EleutherAI/gpt-j-6b](https://huggingface.co/EleutherAI/gpt-j-6b) |
+|  GPT_NeoX  |       Yes       |     Yes      |    No    | [EleutherAI/gpt-neox-20b](https://huggingface.co/EleutherAI/gpt-neox-20b) |
+|    GPT2    |       Yes       |     Yes      |    No    | [gpt2](https://huggingface.co/gpt2)|
+| InternLM   |       Yes       |     Yes      |    Yes   | [internlm/internlm-7b](https://huggingface.co/internlm/internlm-7b) |
+|   Llama3/2 |       Yes       |     Yes      |    Yes   | [meta-llama/Meta-Llama-3-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct), [meta-llama/Meta-Llama-3-8B](https://huggingface.co/meta-llama/Meta-Llama-3-8B), [meta-llama/Llama-2-7b](https://huggingface.co/meta-llama/Llama-2-7b) |
+|  Mistral   |       Yes       |     Yes      |    Yes   | [mistralai/Mistral-7B-v0.1](https://huggingface.co/mistralai/Mistral-7B-v0.1) |
+|    MPT     |       Yes       |     Yes      |    Yes   | [mosaicml/mpt-30b](https://huggingface.co/mosaicml/mpt-30b) |
+|   Phi2     |       Yes       |     Yes      |    No   | [microsoft/phi-2](https://huggingface.co/microsoft/phi-2) |
+|   Qwen     |       Yes       |     Yes      |    Yes   | [Qwen/Qwen-72B-Chat](https://huggingface.co/Qwen/Qwen-72B-Chat) |
+|    Yi      |       Yes       |     Yes      |    Yes    |[01-ai/Yi-6B](https://huggingface.co/01-ai/Yi-6B), [01-ai/Yi-34B-Chat-4bits](https://huggingface.co/01-ai/Yi-34B-Chat-4bits), [01-ai/Yi-6B-200K](https://huggingface.co/01-ai/Yi-6B-200K) |
+
+If your model is not included in the supported list, we are more than willing to assist you. Please feel free to create a request for adding a new model on [GitHub Issues](https://github.com/vectorch-ai/ScaleLLM/issues).
+
 ## Getting Started
 
-The easiest way to get started with our project is by using the official Docker images. If you don't have Docker installed, please follow the installation instructions for your platform.
+The easiest way to get started with our project is by using the official Docker images. If you don't have Docker installed, please follow the installation instructions for your platform. 
+Below, you will find a list of all available Docker images for our project:
+|   Docker Image   | cuda 12.1 | cuda 11.8 |
+| :--------------: | :-------: | :-------: |
+| [scalellm](https://hub.docker.com/r/vectorchai/scalellm/tags) |     Yes   | No |
+| [scalellm_cu118](https://hub.docker.com/r/vectorchai/scalellm_cu118/tags) |     No   | Yes |
+| [scalellm-gateway](https://hub.docker.com/r/vectorchai/scalellm-gateway/tags) |     -   | - |
+| [chatbot-ui](https://hub.docker.com/r/vectorchai/chatbot-ui/tags) |     -   | - |
 
 ### Docker Installation
 
-You can download and install Docker from the official website: [Docker Installation](https://docs.docker.com/get-docker/).
+You can download and install Docker from the official website: [Docker Installation](https://docs.docker.com/get-docker/). To use GPUs in docker, you also need to install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
-> **Note**<br />
-> To use GPUs, you also need to install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+### ScaleLLM server
 
-### Docker Container
-
-Once you have Docker installed, you can run our project's Docker container using the following command:
+Once you have Docker installed, you can run ScaleLLM Docker container with [latest image](https://hub.docker.com/r/vectorchai/scalellm/tags) using the following command:
 
 ```bash
+docker pull docker.io/vectorchai/scalellm:latest
 docker run -it --gpus=all --net=host --shm-size=1g \
   -v $HOME/.cache/huggingface/hub:/models \
-  -e HF_MODEL_ID=TheBloke/Llama-2-7B-chat-AWQ \
+  -e HF_MODEL_ID=meta-llama/Meta-Llama-3-8B-Instruct \
   -e DEVICE=cuda:0 \
   docker.io/vectorchai/scalellm:latest --logtostderr
 ``` 
 
 This command starts the Docker container with GPU support and various configuration options.
-> **Warning**<br />
-> NCCL might fall back to using the host memory if NVLink or PCI is not available. To allow NCCL to use the host memory, we added '--shm-size=1g' to the docker run command.
 
 - `HF_MODEL_ID` specifies which Hugging Face model you want to run.
 - `HF_MODEL_REVISION` specifies which Hugging Face model revision you want to run. By default, it is set to `"main"`.
-- `HF_MODEL_ALLOW_PATTERN` specifies which types of files are allowed to be downloaded. By default, it is set to `"*.json,*.safetensors,*.model"`.
-- `DEVICE` specifies the device on which this model should run. By default, it is set to `"auto"`.
-- `HUGGING_FACE_HUB_TOKEN` specifies the token from [huggingface](https://huggingface.co/settings/tokens) for gated models.
+- `DEVICE` specifies the device on which this model should run. By default, it is set to `"auto"`, using all available GPUs. You can also specify specific GPUs by using `"cuda:0,cuda:1"`, or use CPU by using `"cpu"`.
+- `HF_MODEL_ALLOW_PATTERN` specifies which types of files are allowed to be downloaded. By default, it will be configured automatically based on tensor type. Only use this option if the default configuration is not working for you.
+- `HUGGING_FACE_HUB_TOKEN` specifies the token from [huggingface](https://huggingface.co/settings/tokens) for gated models. `-e HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN`
 
-> **Note**<br />
-> Although ScaleLLM supports both `CPU` and `GPU`, we recommend using GPU for better performance. CPU support is mainly for debugging and testing purposes, so the performance might be sub-optimal. If you want to use CPU, please set `DEVICE=cpu` in the command.
+> **Warning**<br />
+> * The docker image with tag '[latest](https://hub.docker.com/r/vectorchai/scalellm/tags)' could be changed to a new version upon new release. In order to use latest image, you may need to repull the image with specific tag.
+> * Two version of docker images are provided for cuda 12.1 and cuda 11.8. Please choose the right image for your environment.
+> * NCCL might fall back to using the host memory if NVLink or PCI is not available. To allow NCCL to use the host memory, we added '--shm-size=1g' to the docker run command.
+> * Although ScaleLLM supports both `CPU` and `GPU`, we recommend using GPU for better performance. CPU support is mainly for debugging and testing purposes, so the performance might be sub-optimal. 
 
-### Ports and Endpoints
+#### Ports and Endpoints
 
 After running the Docker container, two ports are exposed:
 
@@ -99,33 +120,35 @@ After running the Docker container, two ports are exposed:
 
 ### Rest API Server
 
-You can also start a REST API gateway using the following command:
+You can also start a REST API gateway with [latest image](https://hub.docker.com/r/vectorchai/scalellm-gateway/tags) using the following command:
 
 ```bash
+docker pull docker.io/vectorchai/scalellm-gateway:latest
 docker run -it --net=host \
   docker.io/vectorchai/scalellm-gateway:latest --logtostderr
 ```
 
 The REST API Server is available on `localhost:8080`. You can use REST API requests to interact with the system. Check out the [Usage Examples](#usage-examples) section for more details.
 
-### Local Chatbot UI
+### Chatbot UI
 
-A local Chatbot UI is also available on [localhost:3000](localhost:3000). You can start it with the following command:
+A local Chatbot UI is also available on [localhost:3000](localhost:3000). You can start it with [latest image](https://hub.docker.com/r/vectorchai/chatbot-ui/tags) using the following command:
 
 ```bash
+docker pull docker.io/vectorchai/chatbot-ui:latest
 docker run -it --net=host \
   -e OPENAI_API_HOST=http://127.0.0.1:8080 \
   -e OPENAI_API_KEY=YOUR_API_KEY \
   docker.io/vectorchai/chatbot-ui:latest
 ```
 
-## Docker Compose
+### Docker Compose
 
 Using Docker Compose is the easiest way to run ScaleLLM with all the services together. If you don't have Docker Compose installed, please follow the [installation doc](https://docs.docker.com/compose/install/) for your platform.
 
 ```bash
 curl https://raw.githubusercontent.com/vectorch-ai/ScaleLLM/main/scalellm.yml -sSf > scalellm_compose.yml
-HF_MODEL_ID=TheBloke/Llama-2-7B-chat-AWQ DEVICE=cuda docker compose -f ./scalellm_compose.yml up
+HF_MODEL_ID=meta-llama/Meta-Llama-3-8B-Instruct DEVICE=cuda docker compose -f ./scalellm_compose.yml up
 ```
 
 you will get following running services:
@@ -143,7 +166,7 @@ You can get chat completions with the following example:
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "TheBloke/Llama-2-7B-chat-AWQ",
+    "model": "meta-llama/Meta-Llama-3-8B-Instruct",
     "messages": [
       {
         "role": "system",
@@ -168,7 +191,7 @@ openai.api_base = "http://localhost:8080/v1"
 print("==== Available models ====")
 models = openai.Model.list()
 
-model = "TheBloke/Llama-2-7B-chat-AWQ"
+model = "meta-llama/Meta-Llama-3-8B-Instruct"
 
 completion = openai.ChatCompletion.create(
     model=model,
@@ -195,7 +218,7 @@ For regular completions, you can use this example:
 curl http://localhost:8080/v1/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "TheBloke/Llama-2-7B-chat-AWQ",
+    "model": "meta-llama/Meta-Llama-3-8B-Instruct",
     "prompt": "hello",
     "max_tokens": 32,
     "temperature": 0.7,
@@ -214,7 +237,7 @@ openai.api_base = "http://localhost:8080/v1"
 print("==== Available models ====")
 models = openai.Model.list()
 
-model = "TheBloke/Llama-2-7B-chat-AWQ"
+model = "meta-llama/Meta-Llama-3-8B-Instruct"
 
 completion = openai.Completion.create(
     model=model,
@@ -231,25 +254,8 @@ for chunk in completion:
         print(content, end="")
 ```
 
-## Supported Models
-
-|   Models   | Tensor Parallel | Quantization | Chat API | HF models examples |
-| :--------: | :-------------: | :----------: | :------: | :---------------------------:|
-|    Yi      |       Yes       |     Yes      |    No    |[01-ai/Yi-6B](https://huggingface.co/01-ai/Yi-6B), [01-ai/Yi-6B-200K](https://huggingface.co/01-ai/Yi-6B-200K), [casperhansen/yi-6b-awq](https://huggingface.co/casperhansen/yi-6b-awq), [TheBloke/Yi-34B-GPTQ](https://huggingface.co/TheBloke/Yi-34B-GPTQ) |
-|   Llama2   |       Yes       |     Yes      |    Yes   | [meta-llama/Llama-2-7b](https://huggingface.co/meta-llama/Llama-2-7b), [TheBloke/Llama-2-13B-chat-GPTQ](https://huggingface.co/TheBloke/Llama-2-13B-chat-GPTQ), [TheBloke/Llama-2-70B-AWQ](https://huggingface.co/TheBloke/Llama-2-70B-AWQ) |
-|   Aquila   |       Yes       |     Yes      |    Yes   | [BAAI/Aquila-7B](https://huggingface.co/BAAI/Aquila-7B), [BAAI/AquilaChat-7B](https://huggingface.co/BAAI/AquilaChat-7B) |
-|   Bloom    |       Yes       |     Yes      |    No    | [bigscience/bloom](https://huggingface.co/bigscience/bloom) |
-|   GPT_j    |       Yes       |     Yes      |    No    | [EleutherAI/gpt-j-6b](https://huggingface.co/EleutherAI/gpt-j-6b) |
-|  GPT_NeoX  |       Yes       |     Yes      |    No    | [EleutherAI/gpt-neox-20b](https://huggingface.co/EleutherAI/gpt-neox-20b) |
-|    GPT2    |       Yes       |     Yes      |    No    | [gpt2](https://huggingface.co/gpt2)|
-| InternLM   |       Yes       |     Yes      |    Yes   | [internlm/internlm-7b](https://huggingface.co/internlm/internlm-7b) |
-|  Mistral   |       Yes       |     Yes      |    Yes   | [mistralai/Mistral-7B-v0.1](https://huggingface.co/mistralai/Mistral-7B-v0.1) |
-|    MPT     |       Yes       |     Yes      |    No    | [mosaicml/mpt-30b](https://huggingface.co/mosaicml/mpt-30b) |
-
-If your model is not included in the supported list, we are more than willing to assist you. Please feel free to create a request for adding a new model on [GitHub Issues](https://github.com/vectorch-ai/ScaleLLM/issues).
-
 ## Quantization
-Quantization is a crucial process for reducing the memory footprint of models. ScaleLLM offers support for two quantization techniques: Accurate Post-Training Quantization ([APTQ](https://arxiv.org/abs/2210.17323)) and Activation-aware Weight Quantization ([AWQ](https://arxiv.org/abs/2306.00978)), with seamless integration into the following libraries: autogptq, exllama, exllamav2, and awq. 
+Quantization is a crucial process for reducing the memory footprint of models. ScaleLLM offers support for two quantization techniques: Accurate Post-Training Quantization ([GPTQ](https://arxiv.org/abs/2210.17323)) and Activation-aware Weight Quantization ([AWQ](https://arxiv.org/abs/2306.00978)), with seamless integration into the following libraries: autogptq, exllama, exllamav2, and awq. 
 
 >By default, **exllamav2** is employed for GPTQ 4-bit quantization. However, you have the flexibility to choose a specific implementation by configuring the **"--qlinear_gptq_impl"** option, which allows you to select from exllama, exllamav2, or auto option.
 
@@ -257,7 +263,7 @@ Quantization is a crucial process for reducing the memory footprint of models. S
 
 There are several known limitations we are looking to address in the coming months, including:
 
-- Only supports Hugging Face models with [fast tokenizers](https://github.com/huggingface/tokenizers).
+- Only supports GPUs that newer than Turing architecture.
 
 ## Contributing
 
@@ -265,6 +271,7 @@ If you have any questions or want to contribute, please don't hesitate to ask in
 
 ## Acknowledgements
 The following open-source projects have been used in this project, either in their original form or modified to meet our needs:
+* [flashinfer](https://github.com/flashinfer-ai/flashinfer)
 * [pytorch](https://github.com/pytorch/pytorch)
 * [FasterTransformer](https://github.com/NVIDIA/FasterTransformer)
 * [vllm](https://github.com/vllm-project/vllm)

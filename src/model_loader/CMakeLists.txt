@@ -9,7 +9,7 @@ cc_library(
   SRCS 
     state_dict.cpp
   DEPS
-    safetensors
+    huggingface
     torch
     glog::glog
     Folly::folly
@@ -33,25 +33,13 @@ cc_library(
     model_loader
   HDRS 
     model_loader.h
+    args_overrider.h
   SRCS 
     model_loader.cpp
+    args_overrider.cpp
   DEPS
     :common
     :models
     :tokenizer
     torch
 )
-
-cc_library(
-  NAME 
-    model_downloader
-  HDRS 
-    model_downloader.h
-  SRCS 
-    model_downloader.cpp
-  DEPS
-    torch
-    Python::Python
-)
-
-add_subdirectory(safetensors)

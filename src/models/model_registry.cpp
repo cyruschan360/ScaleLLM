@@ -1,19 +1,23 @@
 #include "model_registry.h"
 
-#include "common/logging.h"
+#include <glog/logging.h>
 
 // list all registered models here
-#include "huggingface/aquila.h"
-#include "huggingface/bloom.h"
-#include "huggingface/gpt2.h"
-#include "huggingface/gpt_j.h"
-#include "huggingface/gpt_neox.h"
-#include "huggingface/internlm.h"
-#include "huggingface/llama.h"
-#include "huggingface/mistral.h"
-#include "huggingface/mpt.h"
-#include "huggingface/yi.h"
-#include "llama.h"
+#include "huggingface/aquila.h"    // IWYU pragma: keep
+#include "huggingface/baichuan.h"  // IWYU pargma: keep
+#include "huggingface/bloom.h"     // IWYU pragma: keep
+#include "huggingface/chatglm.h"   // IWYU pragma: keep
+#include "huggingface/gemma.h"     // IWYU pragma: keep
+#include "huggingface/gpt2.h"      // IWYU pragma: keep
+#include "huggingface/gpt_j.h"     // IWYU pragma: keep
+#include "huggingface/gpt_neox.h"  // IWYU pragma: keep
+#include "huggingface/internlm.h"  // IWYU pragma: keep
+#include "huggingface/llama.h"     // IWYU pragma: keep
+#include "huggingface/mistral.h"   // IWYU pragma: keep
+#include "huggingface/mpt.h"       // IWYU pragma: keep
+#include "huggingface/phi.h"       // IWYU pragma: keep
+#include "huggingface/qwen.h"      // IWYU pragma: keep
+#include "llama.h"                 // IWYU pragma: keep
 
 namespace llm {
 
@@ -26,7 +30,7 @@ void ModelRegistry::register_causallm_factory(const std::string& name,
                                               CausalLMFactory factory) {
   ModelRegistry* instance = get_instance();
   if (instance->model_registry_[name].causal_lm_factory != nullptr) {
-    GLOG(WARNING) << "causal lm factory for " << name << "already registered.";
+    LOG(WARNING) << "causal lm factory for " << name << "already registered.";
   } else {
     instance->model_registry_[name].causal_lm_factory = factory;
   }
@@ -36,29 +40,42 @@ void ModelRegistry::register_model_args_loader(const std::string& name,
                                                ModelArgsLoader loader) {
   ModelRegistry* instance = get_instance();
   if (instance->model_registry_[name].model_args_loader != nullptr) {
-    GLOG(WARNING) << "model args loader for " << name << "already registered.";
+    LOG(WARNING) << "model args loader for " << name << "already registered.";
   } else {
     instance->model_registry_[name].model_args_loader = loader;
   }
 }
 
 void ModelRegistry::register_quant_args_loader(const std::string& name,
-                                               QuantizationArgsLoader loader) {
+                                               QuantArgsLoader loader) {
   ModelRegistry* instance = get_instance();
   if (instance->model_registry_[name].quant_args_loader != nullptr) {
-    GLOG(WARNING) << "quant args loader for " << name << "already registered.";
+    LOG(WARNING) << "quant args loader for " << name << "already registered.";
   } else {
     instance->model_registry_[name].quant_args_loader = loader;
   }
 }
 
-void ModelRegistry::register_dialog_factory(const std::string& name,
-                                            DialogFactory factory) {
+void ModelRegistry::register_tokenizer_args_loader(const std::string& name,
+                                                   TokenizerArgsLoader loader) {
   ModelRegistry* instance = get_instance();
-  if (instance->model_registry_[name].dialog_factory != nullptr) {
-    GLOG(WARNING) << "dialog factory for " << name << "already registered.";
+  if (instance->model_registry_[name].tokenizer_args_loader != nullptr) {
+    LOG(WARNING) << "tokenizer args loader for " << name
+                 << "already registered.";
   } else {
-    instance->model_registry_[name].dialog_factory = factory;
+    instance->model_registry_[name].tokenizer_args_loader = loader;
+  }
+}
+
+void ModelRegistry::register_default_chat_template_factory(
+    const std::string& name,
+    ChatTemplateFactory factory) {
+  ModelRegistry* instance = get_instance();
+  if (instance->model_registry_[name].chat_template_factory != nullptr) {
+    LOG(WARNING) << "conversation template for " << name
+                 << "already registered.";
+  } else {
+    instance->model_registry_[name].chat_template_factory = factory;
   }
 }
 
@@ -72,15 +89,21 @@ ModelArgsLoader ModelRegistry::get_model_args_loader(const std::string& name) {
   return instance->model_registry_[name].model_args_loader;
 }
 
-QuantizationArgsLoader ModelRegistry::get_quant_args_loader(
-    const std::string& name) {
+QuantArgsLoader ModelRegistry::get_quant_args_loader(const std::string& name) {
   ModelRegistry* instance = get_instance();
   return instance->model_registry_[name].quant_args_loader;
 }
 
-DialogFactory ModelRegistry::get_dialog_factory(const std::string& name) {
+TokenizerArgsLoader ModelRegistry::get_tokenizer_args_loader(
+    const std::string& name) {
   ModelRegistry* instance = get_instance();
-  return instance->model_registry_[name].dialog_factory;
+  return instance->model_registry_[name].tokenizer_args_loader;
+}
+
+ChatTemplateFactory ModelRegistry::get_default_chat_template_factory(
+    const std::string& name) {
+  ModelRegistry* instance = get_instance();
+  return instance->model_registry_[name].chat_template_factory;
 }
 
 }  // namespace llm

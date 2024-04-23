@@ -1,11 +1,11 @@
 #pragma once
 
+#include <glog/logging.h>
 #include <torch/torch.h>
 
-#include "common/logging.h"
 #include "linear.h"
 #include "model_loader/state_dict.h"
-#include "models/args.h"
+#include "models/model_args.h"
 
 namespace llm {
 namespace detail {
@@ -30,8 +30,7 @@ class ColumnParallelLinearImpl : public ParallelLinearImpl {
                            bool bias,
                            bool gather_output,
                            const ParallelArgs& parallel_args,
-                           torch::ScalarType dtype,
-                           const torch::Device& device);
+                           const torch::TensorOptions& options);
 
   torch::Tensor forward(torch::Tensor input) const override;
 
@@ -48,9 +47,9 @@ class ColumnParallelLinearImpl : public ParallelLinearImpl {
 
   // whether the weight is loaded
   void verify_loaded_weights(const std::string& prefix) const override {
-    GCHECK(weight_is_loaded_)
+    CHECK(weight_is_loaded_)
         << "weight is not loaded for " << prefix + "weight";
-    GCHECK(!bias_.defined() || bias_is_loaded_)
+    CHECK(!bias_.defined() || bias_is_loaded_)
         << "bias is not loaded for " << prefix + "bias";
   }
 
@@ -97,8 +96,7 @@ class RowParallelLinearImpl : public ParallelLinearImpl {
                         bool bias,
                         bool input_is_parallelized,
                         const ParallelArgs& parallel_args,
-                        torch::ScalarType dtype,
-                        const torch::Device& device);
+                        const torch::TensorOptions& options);
 
   torch::Tensor forward(torch::Tensor input) const override;
 
@@ -107,9 +105,9 @@ class RowParallelLinearImpl : public ParallelLinearImpl {
 
   // whether the weight is loaded
   void verify_loaded_weights(const std::string& prefix = "") const override {
-    GCHECK(weight_is_loaded_)
+    CHECK(weight_is_loaded_)
         << "weight is not loaded for " << prefix + "weight";
-    GCHECK(!bias_.defined() || bias_is_loaded_)
+    CHECK(!bias_.defined() || bias_is_loaded_)
         << "bias is not loaded for " << prefix + "bias";
   }
 

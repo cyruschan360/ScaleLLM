@@ -2,59 +2,34 @@
 
 #include <torch/torch.h>
 
-#include <algorithm>
 #include <memory>
-#include <string>
-
-#include "common/logging.h"
 
 namespace llm {
 std::unique_ptr<LogitsProcessor> LogitsProcessor::create(
-    const SamplingParameters& params,
-    torch::ScalarType dtype,
-    const torch::Device& device) {
+    const SamplingParameters& params) {
   std::vector<std::unique_ptr<LogitsProcessor>> processors;
 
   // construct logits processors based on the given parameters
   // always try to skip creating a processor if possible
-  if (std::any_of(params.frequency_penalties.begin(),
-                  params.frequency_penalties.end(),
-                  [](float t) { return t != 0.0; }) ||
-      std::any_of(params.presence_penalties.begin(),
-                  params.presence_penalties.end(),
-                  [](float t) { return t != 0.0; })) {
+  if (params.frequency_penalties.defined()) {
     processors.push_back(
         std::make_unique<FrequencyPresencePenaltyLogitsProcessor>(
-            params.frequency_penalties,
-            params.presence_penalties,
-            dtype,
-            device));
+            params.frequency_penalties, params.presence_penalties));
   }
-  if (std::any_of(params.repetition_penalties.begin(),
-                  params.repetition_penalties.end(),
-                  [](float t) { return t != 1.0; })) {
+
+  if (params.repetition_penalties.defined()) {
     processors.push_back(std::make_unique<RepetitionPenaltyLogitsProcessor>(
-        params.repetition_penalties, dtype, device));
-  }
-  if (std::any_of(params.temperatures.begin(),
-                  params.temperatures.end(),
-                  [](float t) { return t != 1.0; })) {
-    processors.push_back(std::make_unique<TemperatureLogitsProcessor>(
-        params.temperatures, dtype, device));
+        params.repetition_penalties));
   }
 
-  if (std::any_of(params.top_k.begin(), params.top_k.end(), [](int64_t t) {
-        return t != 0;
-      })) {
+  if (params.temperatures.defined()) {
     processors.push_back(
-        std::make_unique<TopKLogitsProcessor>(params.top_k, dtype, device));
+        std::make_unique<TemperatureLogitsProcessor>(params.temperatures));
   }
 
-  if (std::any_of(params.top_p.begin(), params.top_p.end(), [](float t) {
-        return t != 1.0;
-      })) {
+  if (params.top_k.defined() || params.top_p.defined()) {
     processors.push_back(
-        std::make_unique<TopPLogitsProcessor>(params.top_p, dtype, device));
+        std::make_unique<TopKTopPLogitsProcessor>(params.top_k, params.top_p));
   }
 
   return std::make_unique<LogitsProcessorList>(std::move(processors));

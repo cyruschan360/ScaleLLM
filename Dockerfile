@@ -1,7 +1,8 @@
-# ---- Build ----
-FROM nvcr.io/nvidia/cuda:12.1.0-devel-ubuntu22.04 as build
+# set base image using nvidia cuda 12.1 for ubuntu 22.04
+ARG BASE_IMAGE=nvcr.io/nvidia/cuda:12.1.0-devel-ubuntu22.04
 
-ARG VERSION=main
+# ---- Build ----
+FROM $BASE_IMAGE as build
 
 LABEL maintainer="mi@vectorch.com"
 
@@ -11,10 +12,12 @@ RUN apt-get update -q -y && \
     build-essential \
     ninja-build \
     cmake \
+    ccache \
     python3-dev \
     zip \
     pkg-config \
     libssl-dev \
+    libboost-all-dev \
     curl \
     git \
     wget
@@ -43,7 +46,8 @@ RUN cmake --build build --target scalellm --config Release -j$(nproc)
 
 # install
 RUN cmake --install build --prefix /app
-RUN cp ./entrypoint.sh /app/entrypoint.sh
+RUN cp ./scripts/download_hf_models.py /app/download_hf_models.py
+RUN cp ./scripts/entrypoint.sh /app/entrypoint.sh
 RUN cp ./requirements.txt /app/requirements.txt
 
 # ---- Production ----
@@ -71,6 +75,6 @@ EXPOSE 8888
 EXPOSE 9999
 
 # start the server
-ENTRYPOINT [ "./entrypoint.sh" ]
+ENTRYPOINT [ "/app/entrypoint.sh" ]
 
 

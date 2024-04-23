@@ -6,12 +6,20 @@ cc_library(
     scheduler
   HDRS
     scheduler.h
-    continuous_batching_scheduler.h
+    response_handler.h
+    scheduler_config.h
+    scheduler_factory.h
+    scheduler_policy.h
+    continuous_scheduler.h
   SRCS 
-    continuous_batching_scheduler.cpp
+    response_handler.cpp
+    scheduler_config.cpp
+    scheduler_policy.cpp
+    continuous_scheduler.cpp
   DEPS
     :request
     :engine
+    :speculative
     glog::glog
     Folly::folly
     absl::time
@@ -24,5 +32,6 @@ cc_library(
 #     scheduler_test.cpp
 #   DEPS
 #     :scheduler
+#     absl::strings
 #     GTest::gtest_main
 # )

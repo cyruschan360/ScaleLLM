@@ -2,11 +2,10 @@
 
 #include <cstdint>
 #include <deque>
-#include <memory>
 #include <string>
 #include <vector>
 
-#include "sampling_parameter.h"
+#include "sampling/parameters.h"
 #include "sequence.h"
 #include "status.h"
 #include "stopping_criteria.h"
@@ -37,36 +36,89 @@ enum class ScheduleStatus {
   CANCELLED,
 };
 
+struct Statistics {
+  // the number of tokens in the prompt.
+  size_t num_prompt_tokens = 0;
+  // the number of tokens in the generated completion.
+  size_t num_generated_tokens = 0;
+  // the total number of tokens used in the request (prompt + completion).
+  size_t num_total_tokens = 0;
+};
+
 // Priority of the request.
 // The higher the priority, the sooner the request is processed.
 enum class RequestPriority { HIGH = 0, MEDIUM, LOW };
 
-using OnFinish = std::function<bool(const std::string& output_text,
-                                    FinishReason finish_reason,
-                                    const Status& status)>;
+struct SequenceOutput {
+  std::string text;
+
+  FinishReason finish_reason;
+};
+
+// Function to call when a request is finished.
+using OnFinish =
+    std::function<bool(const std::vector<SequenceOutput>& seq_results,
+                       const Status& status,
+                       const Statistics& stats)>;
+
+using OnStreamDelta =
+    std::function<bool(size_t index, const SequenceDeltaOutput& output)>;
+
+// Function to call when a stream request is finished.
+using OnStreamFinish = std::function<bool(const Status& status)>;
+
+// Function to check rpc health.
+using IsRpcOK = std::function<bool()>;
 
 // A request is a data structure that encapsulates all the necessary
 // information required to process a request efficiently. It acts as a
 // container, holding essential data, such as input parameters, configuration
 // settings, and any additional context-specific details related to the
 // request's handling.
-struct Request {
+struct Request final {
  public:
-  Request(std::string id) : id(std::move(id)){};
+  // caller needs to gurantee prompt's lifecycle
+  Request(const std::string& id,
+          const std::string_view& prompt,
+          const std::vector<int32_t>& prompt_tokens,
+          size_t seq_capacity,
+          size_t num_seqs);
 
-  void add_sequence(std::string prompt,
-                    std::vector<int32_t> token_ids,
-                    OnStream on_stream);
+  void add_sequence();
 
   bool is_finished() const;
+
+  bool is_cancelled() const;
+
+  size_t num_prompt_tokens() const { return prompt_tokens.size(); }
+
+  bool should_expand_sequences() const;
+
+  void expand_sequences();
 
   // The unique id of the request.
   // NOLINTNEXTLINE
   const std::string id;
 
-  // list of sequences to generate completions for the prompt
-  // use deque instead of vector to avoid no-copy move for Sequence
-  std::deque<Sequence> sequences;
+  // Scheduled time of the request.
+  // NOLINTNEXTLINE
+  const int64_t created_time;
+
+  // prompt text string
+  // NOLINTNEXTLINE
+  const std::string_view prompt;
+
+  // the number of sequences to generate completions for the prompt.
+  // NOLINTNEXTLINE
+  const size_t num_seqs;
+
+  // the token ids from request's prompt.
+  // NOLINTNEXTLINE
+  const std::vector<int32_t> prompt_tokens;
+
+  // max number of tokens per sequence.
+  // NOLINTNEXTLINE
+  const size_t seq_capacity;
 
   // sampling parameters
   SamplingParameter sampling_param;
@@ -80,17 +132,24 @@ struct Request {
   // Whether to echo back the prompt in the output.
   bool echo = true;
 
-  // The status of the request.
-  // ScheduleStatus status = ScheduleStatus::WAITING;
-
   // the priority of the request.
   RequestPriority priority = RequestPriority::MEDIUM;
 
-  // Scheduled time of the request.
-  int64_t created_time = 0;
+  // list of sequences to generate completions for the prompt
+  // use deque instead of vector to avoid no-copy move for Sequence
+  std::deque<Sequence> sequences;
 
   // function to call when the request is finished.
   OnFinish on_finish;
+
+  // function to call when a delta is generated.
+  OnStreamDelta on_stream_delta;
+
+  // function to call when a stream request is finished.
+  OnStreamFinish on_stream_finish;
+
+  // function to check rpc health.
+  IsRpcOK is_rpc_ok;
 };
 
 // Compare two request contexts based on priority then scheduled time.

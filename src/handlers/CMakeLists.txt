@@ -1,0 +1,27 @@
+include(cc_library)
+
+cc_library(
+  NAME 
+    handlers
+  HDRS 
+    call_data.h
+    utils.h
+    completion_handler.h
+    chat_handler.h
+    models_handler.h
+  SRCS 
+    utils.cpp
+    completion_handler.cpp
+    chat_handler.cpp
+    models_handler.cpp
+  DEPS
+    :common
+    :scheduler
+    :request
+    :engine
+    :models
+    :chat_template
+    stduuid
+    glog::glog
+    grpc_proto::completion
+)

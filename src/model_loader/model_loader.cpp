@@ -1,25 +1,23 @@
 #include "model_loader.h"
 
+#include <absl/strings/match.h>
+#include <absl/strings/str_replace.h>
 #include <gflags/gflags.h>
+#include <glog/logging.h>
 #include <torch/torch.h>
 
 #include <boost/algorithm/string.hpp>
 #include <filesystem>
-#include <fstream>
 #include <vector>
 
+#include "args_overrider.h"
 #include "common/json_reader.h"
-#include "common/logging.h"
 #include "model_loader/state_dict.h"
-#include "models/args.h"
+#include "models/model_args.h"
 #include "models/model_registry.h"
 #include "tokenizer/hf_tokenizer.h"
 #include "tokenizer/sentencepiece_tokenizer.h"
-
-DEFINE_string(model_type, "", "model type, e.g. llama2, llama, gpt_neox");
-DEFINE_string(quant_method, "", "quantization method, e.g. awq, gptq");
-
-DEFINE_string(tokenizer_path, "", "Path to the tokenizer file.");
+#include "tokenizer/tiktoken_tokenizer.h"
 
 namespace llm {
 StateDictIterator::StateDictIterator(
@@ -34,10 +32,10 @@ StateDictIterator::StateDictIterator(
 
 const StateDict* StateDictIterator::get_state_dict() const {
   const size_t num_weight_files = model_weights_files_.size();
-  GCHECK(index_ < num_weight_files);
+  CHECK(index_ < num_weight_files);
   // lazy loading
   if (!state_dict_) {
-    GLOG(INFO) << "Loading model weights from " << model_weights_files_[index_];
+    LOG(INFO) << "Loading model weights from " << model_weights_files_[index_];
 
     const int shard_id = is_sharded_ ? static_cast<int>(index_) : 0;
     const int num_shards = is_sharded_ ? static_cast<int>(num_weight_files) : 1;
@@ -70,22 +68,14 @@ std::unique_ptr<ModelLoader> ModelLoader::create(
 }
 
 std::unique_ptr<Tokenizer> PTModelLoader::tokenizer() const {
-  // use the tokenizer path specified by the user if exists
-  const std::string tokenizer_path =
-      !FLAGS_tokenizer_path.empty() ? FLAGS_tokenizer_path
-                                    : model_weights_path_ + "/tokenizer.model";
-  if (!std::filesystem::exists(tokenizer_path)) {
-    GLOG(ERROR) << "Failed to find tokenizer file: " << tokenizer_path;
-    return nullptr;
-  }
-  return std::make_unique<SentencePieceTokenizer>(tokenizer_path,
-                                                  /*prepend_bos=*/true);
+  return std::make_unique<SentencePieceTokenizer>(model_weights_path_,
+                                                  tokenizer_args_);
 }
 
 PTModelLoader::PTModelLoader(const std::string& model_weights_path)
     : model_weights_path_(model_weights_path) {
   const std::string args_file_path = model_weights_path + "/params.json";
-  GCHECK(load_model_args(args_file_path))
+  CHECK(load_model_args(args_file_path))
       << "Failed to load model args from " << args_file_path;
   for (const auto& entry :
        std::filesystem::directory_iterator(model_weights_path)) {
@@ -93,7 +83,7 @@ PTModelLoader::PTModelLoader(const std::string& model_weights_path)
       model_weights_files_.push_back(entry.path().string());
     }
   }
-  GCHECK(!model_weights_files_.empty())
+  CHECK(!model_weights_files_.empty())
       << "Failed to find model weights files in " << model_weights_path;
   // sort the model weights files by name
   std::sort(model_weights_files_.begin(), model_weights_files_.end());
@@ -102,23 +92,55 @@ PTModelLoader::PTModelLoader(const std::string& model_weights_path)
 bool PTModelLoader::load_model_args(const std::string& args_file_path) {
   JsonReader reader;
   if (!reader.parse(args_file_path)) {
-    GLOG(ERROR) << "Failed to parse model args file: " << args_file_path;
+    LOG(ERROR) << "Failed to parse model args file: " << args_file_path;
     return false;
   }
   // hardcode the model type to llama2 for now.
   args_.model_type() = "llama2";
   auto args_loader = ModelRegistry::get_model_args_loader(args_.model_type());
   if (args_loader == nullptr) {
-    GLOG(ERROR) << "Failed to find model args loader for model type "
-                << args_.model_type();
+    LOG(ERROR) << "Failed to find model args loader for model type "
+               << args_.model_type();
     return false;
   }
-  return args_loader(reader, &args_);
+  if (!args_loader(reader, &args_)) {
+    LOG(ERROR) << "Failed to load model args from " << args_file_path;
+    return false;
+  }
+
+  // read tokenizer args from tokenizer_config.json if exists
+  JsonReader tokenizer_reader;
+  const std::string tokenizer_args_file_path =
+      model_weights_path_ + "/tokenizer_config.json";
+  if (tokenizer_reader.parse(tokenizer_args_file_path)) {
+    // read chat template if exists
+    if (auto v = tokenizer_reader.value<std::string>("chat_template")) {
+      tokenizer_args_.chat_template() = v.value();
+    }
+  }
+
+  auto tokenizer_args_loader =
+      ModelRegistry::get_tokenizer_args_loader(args_.model_type());
+  if (tokenizer_args_loader != nullptr) {
+    if (!tokenizer_args_loader(tokenizer_reader, &tokenizer_args_)) {
+      LOG(ERROR) << "Failed to load tokenizer args from "
+                 << tokenizer_args_file_path;
+      return false;
+    }
+  } else {
+    // use default values if no tokenizer args loader exists
+    LOG(WARNING) << "Failed to find tokenizer args loader for model type "
+                 << args_.model_type();
+  }
+
+  // apply args override from gflag if exists
+  override_args_from_gflag(args_, quant_args_, tokenizer_args_);
+  return true;
 }
 
 HFModelLoader::HFModelLoader(const std::string& model_weights_path)
     : model_weights_path_(model_weights_path) {
-  GCHECK(load_model_args(model_weights_path));
+  CHECK(load_model_args(model_weights_path));
   // try to load safetensors first
   for (const auto& entry :
        std::filesystem::directory_iterator(model_weights_path)) {
@@ -138,54 +160,53 @@ HFModelLoader::HFModelLoader(const std::string& model_weights_path)
     }
     is_pickle_ = true;
   }
-  GCHECK(!model_weights_files_.empty())
+  CHECK(!model_weights_files_.empty())
       << "Failed to find model weights files in " << model_weights_path;
   // sort the model weights files by name
   std::sort(model_weights_files_.begin(), model_weights_files_.end());
 }
 
 std::unique_ptr<Tokenizer> HFModelLoader::tokenizer() const {
-  // use the tokenizer path specified by the user if exists
+  // check if fast tokenizer exists
   const std::string tokenizer_path = model_weights_path_ + "/tokenizer.json";
   if (std::filesystem::exists(tokenizer_path)) {
+    LOG(INFO) << "Using fast tokenizer.";
+    // load fast tokenizer
     return HFTokenizer::from_file(tokenizer_path);
   }
 
-  // fallback to tokenizer.model if tokenizer.json does not exist
-  const std::string vocab_path = model_weights_path_ + "/tokenizer.model";
-  if (std::filesystem::exists(vocab_path)) {
-    GLOG(WARNING) << "Failed to find tokenizer.json, use tokenizer.model "
-                     "instead. Please consider using fast tokenizer for "
-                     "better performance.";
-    return std::make_unique<SentencePieceTokenizer>(vocab_path,
-                                                    /*prepend_bos=*/false);
+  // fallback to sentencepiece/tiktoken tokenizer if no fast tokenizer exists
+  if (tokenizer_args_.tokenizer_type() == "tiktoken") {
+    LOG(INFO) << "Using Tiktoken tokenizer.";
+    return std::make_unique<TiktokenTokenizer>(model_weights_path_,
+                                               tokenizer_args_);
   }
 
-  GLOG(ERROR)
-      << "Failed to find tokenizer file tokenizer.json or tokenizer.model from "
-      << model_weights_path_;
-  return nullptr;
+  LOG(INFO) << "Using SentencePiece tokenizer.";
+  return std::make_unique<SentencePieceTokenizer>(model_weights_path_,
+                                                  tokenizer_args_);
 }
 
 bool HFModelLoader::load_model_args(const std::string& model_weights_path) {
   JsonReader reader;
   const std::string args_file_path = model_weights_path + "/config.json";
   if (!reader.parse(args_file_path)) {
-    GLOG(ERROR) << "Failed to parse model args file: " << args_file_path;
+    LOG(ERROR) << "Failed to parse model args file: " << args_file_path;
     return false;
   }
 
+  std::string model_type;
   if (auto data = reader.value<std::string>("model_type")) {
-    args_.model_type() = data.value();
+    model_type = data.value();
   } else {
-    GLOG(ERROR) << "Failed to find model_type in " << args_file_path;
+    LOG(ERROR) << "Failed to find model_type in " << args_file_path;
     return false;
   }
 
-  auto args_loader = ModelRegistry::get_model_args_loader(args_.model_type());
+  auto args_loader = ModelRegistry::get_model_args_loader(model_type);
   if (args_loader == nullptr) {
-    GLOG(ERROR) << "Failed to find model args loader for model type "
-                << args_.model_type();
+    LOG(ERROR) << "Failed to find model args loader for model type "
+               << model_type;
     return false;
   }
   args_loader(reader, &args_);
@@ -250,19 +271,49 @@ bool HFModelLoader::load_model_args(const std::string& model_weights_path) {
     }
   }
 
-  if (!FLAGS_quant_method.empty() &&
-      quant_args_.quant_method() != FLAGS_quant_method) {
-    GLOG(WARNING) << "Overwriting quant_method to " << FLAGS_quant_method;
-    quant_args_.quant_method() = FLAGS_quant_method;
+  // load tokenizer args from tokenizer_config.json if exists
+  JsonReader tokenizer_reader;
+  const std::string tokenizer_args_file_path =
+      model_weights_path_ + "/tokenizer_config.json";
+  if (tokenizer_reader.parse(tokenizer_args_file_path)) {
+    // read chat template if exists
+    if (auto v = tokenizer_reader.value<std::string>("chat_template")) {
+      tokenizer_args_.chat_template() = v.value();
+    }
   }
 
+  auto tokenizer_args_loader =
+      ModelRegistry::get_tokenizer_args_loader(args_.model_type());
+  if (tokenizer_args_loader != nullptr) {
+    if (!tokenizer_args_loader(tokenizer_reader, &tokenizer_args_)) {
+      LOG(ERROR) << "Failed to load tokenizer args from "
+                 << tokenizer_args_file_path;
+      return false;
+    }
+  }
+
+  // apply args override from gflag if exists
+  override_args_from_gflag(args_, quant_args_, tokenizer_args_);
+
+  // Some hacky logics to support loading of old models
   // always use float16 for quantization
+  // TODO: support quantization for other data types
   if (!quant_args_.quant_method().empty() && args_.dtype() != "float16") {
-    GLOG(WARNING) << "Overwriting dtype from " << args_.dtype()
-                  << " to float16 for quantization";
+    LOG(WARNING) << "Overwriting dtype from " << args_.dtype()
+                 << " to float16 for quantization";
     args_.dtype() = "float16";
   }
 
+  // fix chat template
+  if (!tokenizer_args_.chat_template().empty()) {
+    std::string chat_template = tokenizer_args_.chat_template();
+    // replace "if not add_generation_prompt is defined" since the predence of
+    // "not" and "defined" is different across implementations
+    tokenizer_args_.chat_template() =
+        absl::StrReplaceAll(chat_template,
+                            {{"if not add_generation_prompt is defined",
+                              "if add_generation_prompt is undefined"}});
+  }
   return true;
 }
 

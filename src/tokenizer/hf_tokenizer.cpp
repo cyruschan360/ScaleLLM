@@ -1,22 +1,23 @@
 #include "hf_tokenizer.h"
 
-#include "common/logging.h"
-#include "tokenizers/tokenizers.h"
+#include <glog/logging.h>
+
+#include "huggingface/tokenizers.h"
 
 namespace llm {
 
 std::unique_ptr<HFTokenizer> HFTokenizer::from_file(
     const std::string& tokenizer_file_path) {
   TokenizerHandle handle = tokenizer_from_file(tokenizer_file_path.c_str());
-  GCHECK(handle != nullptr)
-      << "Failed to load tokenizer from file: " << tokenizer_file_path;
+  CHECK(handle != nullptr) << "Failed to load tokenizer from file: "
+                           << tokenizer_file_path;
   return std::make_unique<HFTokenizer>(tokenizer_file_path, handle);
 }
 
 HFTokenizer::HFTokenizer(const std::string& tokenizer_file_path,
                          TokenizerHandle handle)
     : tokenizer_file_path_(tokenizer_file_path), handle_(handle) {
-  GCHECK(handle_ != nullptr);
+  CHECK(handle_ != nullptr);
 }
 
 std::unique_ptr<Tokenizer> HFTokenizer::clone() const {
@@ -39,11 +40,12 @@ bool HFTokenizer::encode(const std::string_view& text,
   return true;
 }
 
-std::string HFTokenizer::decode(const std::vector<int32_t>& ids) const {
+std::string HFTokenizer::decode(const Slice<int32_t>& ids,
+                                bool skip_special_tokens) const {
   tokenizer_decode(handle_,
                    reinterpret_cast<const uint32_t*>(ids.data()),
                    ids.size(),
-                   /*skip_special_tokens=*/true);
+                   skip_special_tokens);
   const char* data = nullptr;
   size_t len = 0;
   tokenizer_get_decode_str(handle_, &data, &len);

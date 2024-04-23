@@ -4,15 +4,17 @@
 
 #include <optional>
 
+#include "chat_template/coded_chat_template.h"
 #include "layers/activation.h"
-#include "layers/attention_alibi.h"
+#include "layers/attention/attention.h"
+#include "layers/attention/handler.h"
 #include "layers/embedding.h"
 #include "layers/linear.h"
 #include "layers/normalization.h"
 #include "memory/kv_cache.h"
-#include "models/args.h"
-#include "models/input_parameters.h"
+#include "models/model_args.h"
 #include "models/model_registry.h"
+#include "models/parameters.h"
 
 // mpt model compatible with huggingface weights
 namespace llm::hf {
@@ -20,12 +22,11 @@ namespace llm::hf {
 class MPTMLPImpl : public torch::nn::Module {
  public:
   MPTMLPImpl(const ModelArgs& args,
-             const QuantizationArgs& quant_args,
+             const QuantArgs& quant_args,
              const ParallelArgs& parallel_args,
-             torch::ScalarType dtype,
-             const torch::Device& device) {
-    act_ = Activation::get_act_func("gelu", device);
-    GCHECK(act_ != nullptr);
+             const torch::TensorOptions& options) {
+    act_ = Activation::get_act_func("gelu", options.device());
+    CHECK(act_ != nullptr);
 
     const int64_t hidden_size = args.hidden_size();
     const int64_t intermediate_size = args.intermediate_size();
@@ -38,8 +39,7 @@ class MPTMLPImpl : public torch::nn::Module {
                                                     /*gather_output=*/false,
                                                     quant_args,
                                                     parallel_args,
-                                                    dtype,
-                                                    device));
+                                                    options));
     down_proj_ =
         register_module("down_proj",
                         RowParallelLinear(intermediate_size,
@@ -48,8 +48,7 @@ class MPTMLPImpl : public torch::nn::Module {
                                           /*input_is_parallelized=*/true,
                                           quant_args,
                                           parallel_args,
-                                          dtype,
-                                          device));
+                                          options));
   }
 
   torch::Tensor forward(torch::Tensor x) {
@@ -80,16 +79,16 @@ TORCH_MODULE(MPTMLP);
 class MPTAttentionImpl : public torch::nn::Module {
  public:
   MPTAttentionImpl(const ModelArgs& args,
-                   const QuantizationArgs& quant_args,
+                   const QuantArgs& quant_args,
                    const ParallelArgs& parallel_args,
-                   torch::ScalarType dtype,
-                   const torch::Device& device)
+                   const torch::TensorOptions& options,
+                   AttentionHandler* handler)
       : qk_layer_norm_(args.attn_qk_ln()),
         attn_qkv_clip_(args.attn_qkv_clip()) {
     const auto world_size = parallel_args.world_size();
     const int64_t hidden_size = args.hidden_size();
     const int64_t n_heads = args.n_heads();
-    const int64_t head_dim = hidden_size / args.n_heads();
+    const int64_t head_dim = args.head_dim();
     const int64_t n_local_heads = n_heads / world_size;
     hidden_size_ = hidden_size;
     head_dim_ = head_dim;
@@ -102,21 +101,18 @@ class MPTAttentionImpl : public torch::nn::Module {
                                                  /*gather_output=*/false,
                                                  quant_args,
                                                  parallel_args,
-                                                 dtype,
-                                                 device));
+                                                 options));
     if (args.attn_qk_ln()) {
       q_ln_ = register_module("q_ln",
                               LayerNorm(args.hidden_size(),
                                         args.layer_norm_eps(),
                                         /*bias=*/!args.no_bias(),
-                                        dtype,
-                                        device));
+                                        options));
       k_ln_ = register_module("k_ln",
                               LayerNorm(args.hidden_size(),
                                         args.layer_norm_eps(),
                                         /*bias=*/!args.no_bias(),
-                                        dtype,
-                                        device));
+                                        options));
     }
 
     out_proj_ =
@@ -127,23 +123,12 @@ class MPTAttentionImpl : public torch::nn::Module {
                                           /*input_is_parallelized=*/true,
                                           quant_args,
                                           parallel_args,
-                                          dtype,
-                                          device));
+                                          options));
 
-    GCHECK(args.attn_alibi()) << "only support alibi attention";
+    CHECK(args.attn_alibi()) << "only support alibi attention";
 
-    // calculate alibi_slopes
-    torch::Tensor alibi_slopes =
-        prepare_alibi_slopes(n_heads, args.alibi_bias_max(), parallel_args);
-    const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-    atten_ = register_module("atten",
-                             AttentionWithAlibi(n_local_heads,
-                                                n_local_heads,
-                                                head_dim,
-                                                scale,
-                                                alibi_slopes,
-                                                dtype,
-                                                device));
+    atten_ = register_module(
+        "atten", Attention(n_local_heads, n_local_heads, head_dim, handler));
   }
 
   torch::Tensor forward(torch::Tensor x,
@@ -165,15 +150,17 @@ class MPTAttentionImpl : public torch::nn::Module {
       k = k_ln_(k);
     }
     // calculate attention, output: (num_tokens, n_local_heads * head_dim)
-    auto output = atten_(q, k, v, kv_cache, input_params);
+    auto output =
+        atten_(q, k, v, /*positions=*/torch::Tensor{}, kv_cache, input_params);
     return out_proj_(output);
   }
 
   // load the weight from the checkpoint
   void load_state_dict(const StateDict& state_dict) {
     // call each submodule's load_state_dict function
-    auto qkv_state_dict =
-        state_dict.select_with_transform("Wqkv.", [this](torch::Tensor tensor) {
+    auto qkv_state_dict = state_dict.select_with_transform(
+        "Wqkv.",
+        [this](const std::string_view& /*name*/, const torch::Tensor& tensor) {
           return reshape_qkv_before_sharding(tensor);
         });
     // reshape local qkv back to [3, n_heads, ...] after sharding
@@ -197,29 +184,9 @@ class MPTAttentionImpl : public torch::nn::Module {
   }
 
  private:
-  static torch::Tensor prepare_alibi_slopes(int64_t n_heads,
-                                            float bias_max,
-                                            const ParallelArgs& parallel_args) {
-    const int64_t next_power_of_2 = std::pow(2, std::ceil(std::log2(n_heads)));
-    auto m = torch::arange(
-        /*start=*/1, /*end=*/next_power_of_2 + 1, torch::kFloat32);
-    m.mul_(bias_max / next_power_of_2);
-    auto slopes = 1.0f / torch::pow(2, m);
-    if (next_power_of_2 != n_heads) {
-      using namespace torch::indexing;
-      slopes = torch::cat({slopes.index({Slice(1, None, 2)}),
-                           slopes.index({Slice(None, None, 2)})});
-    }
-    if (parallel_args.world_size() > 1) {
-      slopes = slopes.chunk(/*chunks=*/parallel_args.world_size(),
-                            /*dim=*/0)[parallel_args.rank()];
-    }
-    return slopes;
-  }
-
   // reshape qkv tensor from [3, n_heads, ...] => [n_heads, 3, ...]
   torch::Tensor reshape_qkv_before_sharding(const torch::Tensor& tensor) {
-    GCHECK(tensor.dim() == 2 || tensor.dim() == 1)
+    CHECK(tensor.dim() == 2 || tensor.dim() == 1)
         << "unexpected tensor dim: " << tensor.dim();
     if (tensor.dim() == 2) {
       return tensor.view({3, -1, head_dim_, hidden_size_})
@@ -234,7 +201,7 @@ class MPTAttentionImpl : public torch::nn::Module {
     // N.B. Fused qkv weights in GPT-NeoX has the shape of [n_heads * 3 *
     // head_dim, hidden_size], while the desired shape is [3 * n_heads *
     // head_dim, hidden_size].
-    GCHECK(tensor.dim() == 2 || tensor.dim() == 1)
+    CHECK(tensor.dim() == 2 || tensor.dim() == 1)
         << "unexpected tensor dim: " << tensor.dim();
     if (tensor.dim() == 2) {
       return tensor.view({-1, 3, head_dim_, hidden_size_})
@@ -253,7 +220,7 @@ class MPTAttentionImpl : public torch::nn::Module {
   LayerNorm k_ln_{nullptr};
 
   // module members without parameters
-  AttentionWithAlibi atten_{nullptr};
+  Attention atten_{nullptr};
 
   // whether to apply layer norm to qk
   bool qk_layer_norm_{false};
@@ -268,27 +235,26 @@ TORCH_MODULE(MPTAttention);
 class MPTBlockImpl : public torch::nn::Module {
  public:
   MPTBlockImpl(const ModelArgs& args,
-               const QuantizationArgs& quant_args,
+               const QuantArgs& quant_args,
                const ParallelArgs& parallel_args,
-               torch::ScalarType dtype,
-               const torch::Device& device) {
+               const torch::TensorOptions& options,
+               AttentionHandler* handler) {
     // register submodules
     attn_ = register_module(
-        "attn", MPTAttention(args, quant_args, parallel_args, dtype, device));
+        "attn",
+        MPTAttention(args, quant_args, parallel_args, options, handler));
     norm_1_ = register_module("norm_1",
                               LayerNorm(args.hidden_size(),
                                         args.layer_norm_eps(),
                                         /*bias=*/!args.no_bias(),
-                                        dtype,
-                                        device));
+                                        options));
     norm_2_ = register_module("norm_2",
                               LayerNorm(args.hidden_size(),
                                         args.layer_norm_eps(),
                                         /*bias=*/!args.no_bias(),
-                                        dtype,
-                                        device));
-    ffn_ = register_module(
-        "ffn", MPTMLP(args, quant_args, parallel_args, dtype, device));
+                                        options));
+    ffn_ = register_module("ffn",
+                           MPTMLP(args, quant_args, parallel_args, options));
   }
 
   torch::Tensor forward(torch::Tensor x,
@@ -329,21 +295,26 @@ TORCH_MODULE(MPTBlock);
 class MPTModelImpl : public torch::nn::Module {
  public:
   MPTModelImpl(const ModelArgs& args,
-               const QuantizationArgs& quant_args,
+               const QuantArgs& quant_args,
                const ParallelArgs& parallel_args,
-               torch::ScalarType dtype,
-               const torch::Device& device) {
+               const torch::TensorOptions& options) {
     // register submodules
-    wte_ = register_module("wte",
-                           ParallelEmbedding(args.vocab_size(),
-                                             args.hidden_size(),
-                                             parallel_args,
-                                             dtype,
-                                             device));
+    wte_ = register_module(
+        "wte",
+        ParallelEmbedding(
+            args.vocab_size(), args.hidden_size(), parallel_args, options));
+
+    // calculate alibi_slopes
+    torch::Tensor alibi_slopes = prepare_alibi_slopes(
+        args.n_heads(), args.alibi_bias_max(), parallel_args);
+    handler_ = AttentionHandler::create_handler_with_alibi(
+        args, alibi_slopes, options);
+
     blocks_ = register_module("blocks", torch::nn::ModuleList());
     layers_.reserve(args.n_layers());
     for (int32_t i = 0; i < args.n_layers(); i++) {
-      auto block = MPTBlock(args, quant_args, parallel_args, dtype, device);
+      auto block =
+          MPTBlock(args, quant_args, parallel_args, options, handler_.get());
       layers_.push_back(block);
       blocks_->push_back(block);
     }
@@ -351,8 +322,7 @@ class MPTModelImpl : public torch::nn::Module {
                               LayerNorm(args.hidden_size(),
                                         args.layer_norm_eps(),
                                         /*bias=*/!args.no_bias(),
-                                        dtype,
-                                        device));
+                                        options));
   }
 
   // tokens: [num_tokens]
@@ -361,6 +331,8 @@ class MPTModelImpl : public torch::nn::Module {
                         std::vector<KVCache>& kv_caches,
                         const InputParameters& input_params) {
     auto h = wte_(tokens);
+
+    // TODO: set working space for attention handler
     for (size_t i = 0; i < layers_.size(); i++) {
       auto& layer = layers_[i];
       h = layer(h, kv_caches[i], input_params);
@@ -389,8 +361,32 @@ class MPTModelImpl : public torch::nn::Module {
   }
 
  private:
+  static torch::Tensor prepare_alibi_slopes(int64_t n_heads,
+                                            float bias_max,
+                                            const ParallelArgs& parallel_args) {
+    const int64_t next_power_of_2 = std::pow(2, std::ceil(std::log2(n_heads)));
+    auto m = torch::arange(
+        /*start=*/1, /*end=*/next_power_of_2 + 1, torch::kFloat32);
+    m.mul_(bias_max / next_power_of_2);
+    auto slopes = 1.0f / torch::pow(2, m);
+    if (next_power_of_2 != n_heads) {
+      using ISlice = torch::indexing::Slice;
+      using torch::indexing::None;
+      slopes = torch::cat({slopes.index({ISlice(1, None, 2)}),
+                           slopes.index({ISlice(None, None, 2)})});
+    }
+    if (parallel_args.world_size() > 1) {
+      slopes = slopes.chunk(/*chunks=*/parallel_args.world_size(),
+                            /*dim=*/0)[parallel_args.rank()];
+    }
+    return slopes;
+  }
+
   // parameter members, must be registered
   ParallelEmbedding wte_{nullptr};
+
+  // attention handler
+  std::unique_ptr<AttentionHandler> handler_{nullptr};
 
   torch::nn::ModuleList blocks_{nullptr};
   // hold same data but different type as blocks_ to avoid type cast
@@ -403,14 +399,12 @@ TORCH_MODULE(MPTModel);
 class MPTForCausalLMImpl : public torch::nn::Module {
  public:
   MPTForCausalLMImpl(const ModelArgs& args,
-                     const QuantizationArgs& quant_args,
+                     const QuantArgs& quant_args,
                      const ParallelArgs& parallel_args,
-                     torch::ScalarType dtype,
-                     const torch::Device& device) {
+                     const torch::TensorOptions& options) {
     // register submodules
     transformer_ = register_module(
-        "transformer",
-        MPTModel(args, quant_args, parallel_args, dtype, device));
+        "transformer", MPTModel(args, quant_args, parallel_args, options));
 
     // TODO: share weights between wte and lm_head to save memory
     lm_head_ = register_module("wte",
@@ -419,19 +413,29 @@ class MPTForCausalLMImpl : public torch::nn::Module {
                                                     /*bias=*/!args.no_bias(),
                                                     /*gather_output=*/true,
                                                     parallel_args,
-                                                    dtype,
-                                                    device));
+                                                    options));
   }
 
   // tokens: [num_tokens]
   // positions: [num_tokens] token pos in the sequence
-  torch::Tensor forward(torch::Tensor tokens,
-                        torch::Tensor /*positions*/,
+  // returns: [num_tokens, hidden_size]
+  torch::Tensor forward(const torch::Tensor& tokens,
+                        const torch::Tensor& /*positions*/,
                         std::vector<KVCache>& kv_caches,
                         const InputParameters& input_params) {
-    auto h = transformer_(tokens, kv_caches, input_params);
-    // select last token for each sequence
-    h = h.index_select(/*dim=*/0, input_params.last_token_indicies);
+    return transformer_(tokens, kv_caches, input_params);
+  }
+
+  // hidden_states: [num_tokens, hidden_size]
+  // seleted_idxes: [num_tokens]
+  // returns: [num_tokens, vocab_size]
+  torch::Tensor logits(const torch::Tensor& hidden_states,
+                       const torch::Tensor& seleted_idxes) {
+    // select tokens if provided
+    auto h = hidden_states;
+    if (seleted_idxes.defined()) {
+      h = h.index_select(/*dim=*/0, seleted_idxes);
+    }
     return lm_head_(h);
   }
 
@@ -454,8 +458,42 @@ class MPTForCausalLMImpl : public torch::nn::Module {
 };
 TORCH_MODULE(MPTForCausalLM);
 
+class MPTChatTemplate final : public CodedChatTemplate {
+ public:
+  // Prompt template:
+  // <|im_start|>system\n {system_message} <|im_end|>\n
+  // <|im_start|>user\n {message} <|im_end|>\n
+  // <|im_start|>assistant\n
+  std::optional<std::string> get_prompt(
+      const std::string_view& system_message,
+      const std::vector<std::string_view>& messages) const override {
+    // at least one user message
+    if (messages.size() % 2 == 0) {
+      return std::nullopt;
+    }
+
+    std::stringstream ss;
+    if (!system_message.empty()) {
+      ss << "<|im_start|>system\n" << system_message << "<|im_end|>\n";
+    }
+
+    // then user and assistant message pairs (u/a/u/a/u...)
+    for (size_t i = 0; i < messages.size(); ++i) {
+      const char* role = (i % 2) == 0 ? "user" : "assistant";
+      ss << "<|im_start|>" << role << "\n" << messages[i] << "<|im_end|>\n";
+    }
+    // end with assistant message
+    ss << "<|im_start|>assistant\n";
+    return ss.str();
+  }
+};
+
+// register the causal model
 REGISTER_CAUSAL_MODEL(mpt, MPTForCausalLM);
+REGISTER_DEFAULT_CHAT_TEMPLATE(mpt, MPTChatTemplate);
+
 REGISTER_MODEL_ARGS(mpt, [&] {
+  LOAD_ARG_OR(model_type, "model_type", "mpt");
   LOAD_ARG_OR(dtype, "torch_dtype", "");
   LOAD_ARG_OR(vocab_size, "vocab_size", 50368);
   LOAD_ARG_OR(hidden_size, "d_model", 2048);
@@ -466,7 +504,7 @@ REGISTER_MODEL_ARGS(mpt, [&] {
   LOAD_ARG_OR(no_bias, "no_bias", true);
 
   // load config for attention
-  LOAD_OPTIONAL_ARG(attn_qkv_clip, "attn_config.clip_qkv");
+  LOAD_ARG(attn_qkv_clip, "attn_config.clip_qkv");
   LOAD_ARG_OR(attn_qk_ln, "attn_config.qk_ln", false);
   LOAD_ARG_OR(attn_alibi, "attn_config.alibi", false);
   LOAD_ARG_OR(alibi_bias_max, "attn_config.alibi_bias_max", 0.0f);
@@ -476,6 +514,13 @@ REGISTER_MODEL_ARGS(mpt, [&] {
         json.value_or<int64_t>("expansion_ratio", 4);
     return expansion_ratio * args->hidden_size();
   });
+
+  LOAD_ARG_OR_FUNC(head_dim, "head_dim", [&] {
+    return args->hidden_size() / args->n_heads();
+  });
+
+  // stop token ids: [0, 50278]
+  SET_ARG(stop_token_ids, std::unordered_set<int32_t>({0, 50278}));
 });
 
 }  // namespace llm::hf

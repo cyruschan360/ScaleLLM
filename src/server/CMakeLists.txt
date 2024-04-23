@@ -4,8 +4,7 @@ include(cc_library)
 cc_library(
   NAME 
     grpc_server
-  HDRS 
-    call_data.h
+  HDRS
     grpc_server.h
   SRCS 
     grpc_server.cpp
@@ -25,9 +24,22 @@ cc_library(
   SRCS
     http_server.cpp
   DEPS
-    absl::strings
     glog::glog
-    libevhtp::evhtp
+)
+
+cc_library(
+  NAME
+    llm
+  HDRS
+    llm.h
+  SRCS
+    llm.cpp
+  DEPS
+    :engine
+    torch
+    absl::strings
+    gflags::gflags
+    glog::glog
 )
 
 cc_binary(
@@ -36,12 +48,12 @@ cc_binary(
   SRCS 
     simple.cpp
   DEPS
-    :engine
-    :model_downloader
+    :engine_factory
     torch
     absl::strings
     gflags::gflags
     glog::glog
+    Python::Python
 )
 
 cc_binary(
@@ -52,7 +64,7 @@ cc_binary(
   DEPS
     :grpc_server
     :http_server
-    :engine
+    :engine_factory
     absl::strings
     gflags::gflags
     glog::glog
@@ -94,5 +106,3 @@ cc_binary(
     gflags::gflags
     grpc_proto::completion
 )
-
-add_subdirectory(handlers)

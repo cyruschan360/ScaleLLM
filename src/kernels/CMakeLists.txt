@@ -18,13 +18,12 @@ cc_library(
     sampling/penalty_kernels.cu
     sampling/softmax_kernels.cu
     sampling/topk_kernels.cu
+    sampling/topp_kernels.cu
   DEPS
     glog::glog
     torch
   DEFINES
     __CUDA_NO_HALF_OPERATORS__
-  COPTS
-    # "$<$<COMPILE_LANGUAGE:CUDA>:-G>"
 )
 
 cc_library(
@@ -35,8 +34,6 @@ cc_library(
     gptq/gptq_kernel.cu
   DEPS
     torch
-  COPTS
-    # "$<$<COMPILE_LANGUAGE:CUDA>:-G>"
 )
 
 cc_library(
@@ -47,8 +44,6 @@ cc_library(
     awq/gemm_cuda_gen.cu
   DEPS
     torch
-  COPTS
-    # "$<$<COMPILE_LANGUAGE:CUDA>:-G>"
 )
 
 cc_library(
@@ -62,8 +57,8 @@ cc_library(
     exllama/cuda_func/q4_matrix.cu
   DEPS
     torch
-  COPTS
-    # "$<$<COMPILE_LANGUAGE:CUDA>:-G>"
+  LINKOPTS 
+    cublas
 )
 
 cc_library(
@@ -75,7 +70,8 @@ cc_library(
     exllamav2/cuda/q_gemm.cu
   DEPS
     torch
-  COPTS
-    # "$<$<COMPILE_LANGUAGE:CUDA>:-G>"
 )
+
+add_subdirectory(flash_attn)
+add_subdirectory(flash_infer)
 

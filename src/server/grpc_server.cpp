@@ -1,13 +1,13 @@
 #include "grpc_server.h"
 
 #include <absl/strings/str_format.h>
+#include <glog/logging.h>
 #include <grpcpp/grpcpp.h>
 
 #include <memory>
 #include <thread>
 
-#include "call_data.h"
-#include "common/logging.h"
+#include "handlers/call_data.h"
 
 namespace llm {
 
@@ -31,7 +31,7 @@ bool GrpcServer::start(const Options& options) {
   cq_ = builder.AddCompletionQueue();
   // Finally assemble the server.
   grpc_server_ = builder.BuildAndStart();
-  GLOG(INFO) << "Started grpc server on " << server_address;
+  LOG(INFO) << "Started grpc server on " << server_address;
 
   // Spawn a new CallData instance for complete request
   {
@@ -102,7 +102,7 @@ void GrpcServer::handle_rpcs() {
   // Block waiting to read the next event from the completion queue.
   // returns if there is any kind of event or cq_ is shutting down.
   while (cq_->Next(&tag, &rpc_ok)) {
-    ICallData* call_data = static_cast<ICallData*>(tag);
+    CallData* call_data = static_cast<CallData*>(tag);
     if (!call_data->proceed(rpc_ok)) {
       // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
       delete call_data;

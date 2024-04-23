@@ -5,19 +5,19 @@ cc_library(
   NAME 
     models
   HDRS
-    args.h
-    input_parameters.h
+    model_args.h
+    parameters.h
     model_registry.h
     causal_lm.h
-    dialog.h
   SRCS
     model_registry.cpp
     causal_lm.cpp
-    dialog.cpp
   DEPS
     :common
     :layers
+    :quantization
     :memory
+    :chat_template
     glog::glog
     torch
 )

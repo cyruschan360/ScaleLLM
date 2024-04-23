@@ -3,16 +3,17 @@
 #include <c10/core/ScalarType.h>
 #include <torch/torch.h>
 
+#include "chat_template/common_chat_template.h"
 #include "layers/activation.h"
-#include "layers/attention_rope.h"
+#include "layers/attention/attention.h"
+#include "layers/attention/handler.h"
 #include "layers/embedding.h"
 #include "layers/linear.h"
 #include "layers/normalization.h"
 #include "memory/kv_cache.h"
-#include "models/args.h"
-#include "models/dialog.h"
-#include "models/input_parameters.h"
+#include "models/model_args.h"
 #include "models/model_registry.h"
+#include "models/parameters.h"
 
 // port LLAMA's model to C++ API:
 // https://github.com/facebookresearch/llama/blob/main/llama/model.py
@@ -20,12 +21,11 @@ namespace llm {
 class LlamaFeedForwardImpl : public torch::nn::Module {
  public:
   LlamaFeedForwardImpl(const ModelArgs& args,
-                       const QuantizationArgs& quant_args,
+                       const QuantArgs& quant_args,
                        const ParallelArgs& parallel_args,
-                       torch::ScalarType dtype,
-                       const torch::Device& device) {
-    act_with_mul_ = Activation::get_act_with_mul_func("silu", device);
-    GCHECK(act_with_mul_ != nullptr);
+                       const torch::TensorOptions& options) {
+    act_with_mul_ = Activation::get_act_with_mul_func("silu", options.device());
+    CHECK(act_with_mul_ != nullptr);
 
     const int64_t hidden_size = args.hidden_size();
     const int64_t intermediate_size = args.intermediate_size();
@@ -38,8 +38,7 @@ class LlamaFeedForwardImpl : public torch::nn::Module {
                                                   /*gather_output=*/false,
                                                   quant_args,
                                                   parallel_args,
-                                                  dtype,
-                                                  device));
+                                                  options));
     w2_ = register_module("w2",
                           RowParallelLinear(intermediate_size,
                                             hidden_size,
@@ -47,8 +46,7 @@ class LlamaFeedForwardImpl : public torch::nn::Module {
                                             /*input_is_parallelized=*/true,
                                             quant_args,
                                             parallel_args,
-                                            dtype,
-                                            device));
+                                            options));
   }
 
   torch::Tensor forward(torch::Tensor x) {
@@ -80,15 +78,15 @@ TORCH_MODULE(LlamaFeedForward);
 class LlamaAttentionImpl : public torch::nn::Module {
  public:
   LlamaAttentionImpl(const ModelArgs& args,
-                     const QuantizationArgs& quant_args,
+                     const QuantArgs& quant_args,
                      const ParallelArgs& parallel_args,
-                     torch::ScalarType dtype,
-                     const torch::Device& device) {
+                     const torch::TensorOptions& options,
+                     AttentionHandler* handler) {
     const int32_t world_size = parallel_args.world_size();
     const int64_t hidden_size = args.hidden_size();
     const int64_t n_heads = args.n_heads();
     const int64_t n_kv_heads = args.n_kv_heads().value_or(n_heads);
-    const int64_t head_dim = hidden_size / n_heads;
+    const int64_t head_dim = args.head_dim();
     const int64_t n_local_heads = n_heads / world_size;
     const int64_t n_local_kv_heads = n_kv_heads / world_size;
 
@@ -106,8 +104,7 @@ class LlamaAttentionImpl : public torch::nn::Module {
                              /*gather_output=*/false,
                              quant_args,
                              parallel_args,
-                             dtype,
-                             device));
+                             options));
     wo_ = register_module("wo",
                           RowParallelLinear(hidden_size,
                                             hidden_size,
@@ -115,30 +112,17 @@ class LlamaAttentionImpl : public torch::nn::Module {
                                             /*input_is_parallelized=*/true,
                                             quant_args,
                                             parallel_args,
-                                            dtype,
-                                            device));
+                                            options));
 
     // initialize attention
-    const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-    atten_ = register_module("atten",
-                             AttentionWithRoPE(n_local_heads,
-                                               n_local_kv_heads,
-                                               head_dim,
-                                               scale,
-                                               /*rotary_dim=*/head_dim,
-                                               args.rope_scaling(),
-                                               args.rope_theta(),
-                                               args.max_position_embeddings(),
-                                               /*interleaved=*/true,
-                                               dtype,
-                                               device));
+    atten_ = register_module(
+        "atten", Attention(n_local_heads, n_local_kv_heads, head_dim, handler));
   }
 
   torch::Tensor forward(torch::Tensor x,
                         torch::Tensor positions,
                         KVCache& kv_cache,
                         const InputParameters& input_params) {
-    const auto num_tokens = x.size(0);
     // (num_tokens, dim) x (dim, n_local_heads * head_dim)
     // => (num_tokens, n_local_heads * head_dim)
     auto qkv = wqkv_(x).split(/*split_size=*/qkv_sizes_, /*dim=*/-1);
@@ -169,7 +153,7 @@ class LlamaAttentionImpl : public torch::nn::Module {
   RowParallelLinear wo_{nullptr};
 
   // module members without parameters
-  AttentionWithRoPE atten_{nullptr};
+  Attention atten_{nullptr};
 
   // size for q, k, v
   std::vector<int64_t> qkv_sizes_;
@@ -179,23 +163,22 @@ TORCH_MODULE(LlamaAttention);
 class LlamaTransformerBlockImpl : public torch::nn::Module {
  public:
   LlamaTransformerBlockImpl(const ModelArgs& args,
-                            const QuantizationArgs& quant_args,
+                            const QuantArgs& quant_args,
                             const ParallelArgs& parallel_args,
-                            torch::ScalarType dtype,
-                            const torch::Device& device) {
+                            const torch::TensorOptions& options,
+                            AttentionHandler* handler) {
     // register submodules
     attention_ = register_module(
         "attention",
-        LlamaAttention(args, quant_args, parallel_args, dtype, device));
+        LlamaAttention(args, quant_args, parallel_args, options, handler));
     feed_forward_ = register_module(
         "feed_forward",
-        LlamaFeedForward(args, quant_args, parallel_args, dtype, device));
+        LlamaFeedForward(args, quant_args, parallel_args, options));
     attention_norm_ = register_module(
         "attention_norm",
-        RMSNorm(args.hidden_size(), args.rms_norm_eps(), dtype, device));
+        RMSNorm(args.hidden_size(), args.rms_norm_eps(), options));
     ffn_norm_ = register_module(
-        "ffn_norm",
-        RMSNorm(args.hidden_size(), args.rms_norm_eps(), dtype, device));
+        "ffn_norm", RMSNorm(args.hidden_size(), args.rms_norm_eps(), options));
   }
 
   torch::Tensor forward(torch::Tensor x,
@@ -238,28 +221,27 @@ TORCH_MODULE(LlamaTransformerBlock);
 class LlamaTransformerImpl : public torch::nn::Module {
  public:
   LlamaTransformerImpl(const ModelArgs& args,
-                       const QuantizationArgs& quant_args,
+                       const QuantArgs& quant_args,
                        const ParallelArgs& parallel_args,
-                       torch::ScalarType dtype,
-                       const torch::Device& device) {
+                       const torch::TensorOptions& options) {
     // register submodules
-    tok_embeddings_ = register_module("tok_embeddings",
-                                      ParallelEmbedding(args.vocab_size(),
-                                                        args.hidden_size(),
-                                                        parallel_args,
-                                                        dtype,
-                                                        device));
+    tok_embeddings_ = register_module(
+        "tok_embeddings",
+        ParallelEmbedding(
+            args.vocab_size(), args.hidden_size(), parallel_args, options));
     blocks_ = register_module("layers", torch::nn::ModuleList());
     layers_.reserve(args.n_layers());
+
+    handler_ = AttentionHandler::create_handler_with_rope(
+        args, /*interleaved=*/true, options);
     for (int32_t i = 0; i < args.n_layers(); i++) {
-      auto block =
-          LlamaTransformerBlock(args, quant_args, parallel_args, dtype, device);
+      auto block = LlamaTransformerBlock(
+          args, quant_args, parallel_args, options, handler_.get());
       layers_.push_back(block);
       blocks_->push_back(block);
     }
     norm_ = register_module(
-        "norm",
-        RMSNorm(args.hidden_size(), args.rms_norm_eps(), dtype, device));
+        "norm", RMSNorm(args.hidden_size(), args.rms_norm_eps(), options));
   }
 
   // tokens: [num_tokens]
@@ -269,6 +251,7 @@ class LlamaTransformerImpl : public torch::nn::Module {
                         std::vector<KVCache>& kv_caches,
                         const InputParameters& input_params) {
     auto h = tok_embeddings_(tokens);
+    // TODO: set working space for attention handler
     for (size_t i = 0; i < layers_.size(); i++) {
       auto& layer = layers_[i];
       h = layer(h, positions, kv_caches[i], input_params);
@@ -299,6 +282,9 @@ class LlamaTransformerImpl : public torch::nn::Module {
   // parameter members, must be registered
   ParallelEmbedding tok_embeddings_{nullptr};
 
+  // attention handler
+  std::unique_ptr<AttentionHandler> handler_{nullptr};
+
   torch::nn::ModuleList blocks_{nullptr};
   // hold same data but different type as blocks_ to avoid type cast
   std::vector<LlamaTransformerBlock> layers_;
@@ -310,14 +296,12 @@ TORCH_MODULE(LlamaTransformer);
 class LlamaForCausalLMImpl : public torch::nn::Module {
  public:
   LlamaForCausalLMImpl(const ModelArgs& args,
-                       const QuantizationArgs& quant_args,
+                       const QuantArgs& quant_args,
                        const ParallelArgs& parallel_args,
-                       torch::ScalarType dtype,
-                       const torch::Device& device) {
+                       const torch::TensorOptions& options) {
     // register submodules
     transformer_ = register_module(
-        "model",
-        LlamaTransformer(args, quant_args, parallel_args, dtype, device));
+        "model", LlamaTransformer(args, quant_args, parallel_args, options));
 
     output_ = register_module("output",
                               ColumnParallelLinear(args.hidden_size(),
@@ -325,19 +309,29 @@ class LlamaForCausalLMImpl : public torch::nn::Module {
                                                    /*bias=*/false,
                                                    /*gather_output=*/true,
                                                    parallel_args,
-                                                   dtype,
-                                                   device));
+                                                   options));
   }
 
   // tokens: [num_tokens]
   // positions: [num_tokens] token pos in the sequence
-  torch::Tensor forward(torch::Tensor tokens,
-                        torch::Tensor positions,
+  // returns: [num_tokens, hidden_size]
+  torch::Tensor forward(const torch::Tensor& tokens,
+                        const torch::Tensor& positions,
                         std::vector<KVCache>& kv_caches,
                         const InputParameters& input_params) {
-    auto h = transformer_(tokens, positions, kv_caches, input_params);
-    // select last token for each sequence
-    h = h.index_select(/*dim=*/0, input_params.last_token_indicies);
+    return transformer_(tokens, positions, kv_caches, input_params);
+  }
+
+  // hidden_states: [num_tokens, hidden_size]
+  // seleted_idxes: [num_tokens]
+  // returns: [num_tokens, vocab_size]
+  torch::Tensor logits(const torch::Tensor& hidden_states,
+                       const torch::Tensor& seleted_idxes) {
+    // select tokens if provided
+    auto h = hidden_states;
+    if (seleted_idxes.defined()) {
+      h = h.index_select(/*dim=*/0, seleted_idxes);
+    }
     return output_(h);
   }
 
@@ -362,7 +356,7 @@ TORCH_MODULE(LlamaForCausalLM);
 
 // register the model to make it available
 REGISTER_CAUSAL_MODEL(llama2, LlamaForCausalLM);
-REGISTER_DIALOG(llama2, Llama2Dialog);
+REGISTER_DEFAULT_CHAT_TEMPLATE(llama2, Llama2ChatTemplate);
 
 REGISTER_MODEL_ARGS(llama2, [&] {
   LOAD_ARG_OR(dtype, "torch_dtype", torch::toString(torch::kBFloat16));
@@ -370,7 +364,7 @@ REGISTER_MODEL_ARGS(llama2, [&] {
   LOAD_ARG_OR(hidden_size, "dim", 4096);
   LOAD_ARG_OR(n_layers, "n_layers", 32);
   LOAD_ARG_OR(n_heads, "n_heads", 32);
-  LOAD_OPTIONAL_ARG(n_kv_heads, "n_kv_heads");
+  LOAD_ARG(n_kv_heads, "n_kv_heads");
   LOAD_ARG_OR(hidden_act, "hidden_act", "silu");
   LOAD_ARG_OR(max_position_embeddings, "max_position_embeddings", 2048);
   LOAD_ARG_OR(rms_norm_eps, "norm_eps", 1e-5);
@@ -394,6 +388,18 @@ REGISTER_MODEL_ARGS(llama2, [&] {
         multiple_of * ((intermediate_size + multiple_of - 1) / multiple_of);
     return intermediate_size;
   });
+
+  LOAD_ARG_OR_FUNC(head_dim, "head_dim", [&] {
+    return args->hidden_size() / args->n_heads();
+  });
+});
+
+// Register tokenizer args since llama2 is using sentencepiece tokenizer.
+REGISTER_TOKENIZER_ARGS(llama2, [&] {
+  SET_ARG(tokenizer_type, "sentencepiece");
+  SET_ARG(vocab_file, "tokenizer.model");
+  // add bos token "<s>" to the prefix tokens
+  SET_ARG(prefix_tokens, std::vector<std::string>({"<s>"}));
 });
 
 }  // namespace llm

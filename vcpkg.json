@@ -3,6 +3,11 @@
   "version": "0.0.1",
   "dependencies": [
     {
+      "name": "fmt",
+      "version>=": "10.1.1",
+      "default-features": false
+    },
+    {
       "name": "abseil",
       "version>=": "20230125.3"
     },
@@ -16,7 +21,7 @@
     },
     {
       "name": "folly",
-      "version>=": "2023.07.03.00",
+      "version>=": "2024.01.01.00",
       "default-features": false
     },
     {
@@ -45,22 +50,22 @@
       "name": "nlohmann-json",
       "version>=": "3.11.2",
       "default-features": false
-    }, 
-    {
-      "name": "libevent",
-      "version>=": "2.1.12+20230128",
-      "features": ["thread"]
     },
     {
-      "name": "libevhtp",
-      "version>=": "1.2.18#5",
-      "features": ["thread"]
+      "name": "rapidjson",
+      "version>=": "2023-07-17",
+      "default-features": false
     },
     {
       "name": "stduuid",
       "version>=": "1.2.3",
       "features": ["system-gen"]
+    },
+    {
+      "name": "re2",
+      "version>=": "2023-07-01",
+      "default-features": false
     }
   ],
-  "builtin-baseline": "9edb1b8e590cc086563301d735cae4b6e732d2d2"
+  "builtin-baseline": "fba75d09065fcc76a25dcf386b1d00d33f5175af"
 }

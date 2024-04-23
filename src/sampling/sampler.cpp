@@ -1,70 +1,55 @@
 #include "sampler.h"
 
-#include <ATen/ATen.h>
-#include <ATen/CPUGeneratorImpl.h>
-#include <ATen/cuda/CUDAGeneratorImpl.h>
+#include <glog/logging.h>
 #include <torch/torch.h>
 
-#include <functional>
-
-#include "common/logging.h"
+#include "sampling/parameters.h"
 namespace llm {
-namespace {
-torch::Generator make_generator(const torch::Device& device) {
-  torch::Generator generator;
-  if (device.type() == at::kCPU) {
-    generator = torch::make_generator<torch::CPUGeneratorImpl>();
-  } else if (device.type() == at::kCUDA) {
-    generator = torch::make_generator<torch::CUDAGeneratorImpl>(device.index());
+
+Sampler::Sampler(const torch::Tensor& do_sample) {
+  CHECK(do_sample.defined());
+  do_sample_ = do_sample;
+  all_random_sample_ = do_sample.all().item<bool>();
+  all_greedy_sample_ = !do_sample.any().item<bool>();
+}
+
+SampleOutput Sampler::forward(const torch::Tensor& logits) const {
+  // same batch size
+  CHECK_EQ(logits.size(0), do_sample_.size(0));
+
+  // use float32 for probabilities and log probabilities
+  const auto probs =
+      torch::softmax(logits, /*dim=*/-1, /*dtype=*/torch::kFloat32);
+  const auto logprobs =
+      torch::log_softmax(logits, /*dim=*/-1, /*dtype=*/torch::kFloat32);
+
+  SampleOutput output;
+  output.probs = probs;
+  output.logprobs = logprobs;
+
+  if (all_random_sample_) {
+    output.next_tokens = random_sample(probs);
+  } else if (all_greedy_sample_) {
+    output.next_tokens = greedy_sample(probs);
   } else {
-    AT_ERROR("Device type ",
-             c10::DeviceTypeName(device.type()),
-             " is not supported for torch.Generator() api.");
+    // mixed sample, sample both then choose based on do_sample_
+    auto random = random_sample(probs);
+    auto greedy = greedy_sample(probs);
+    output.next_tokens = torch::where(do_sample_, random, greedy);
   }
-  return generator;
-}
 
-}  // namespace
-
-Sampler::Sampler(const std::vector<bool>& do_sample,
-                 const std::vector<uint64_t>& seeds,
-                 const torch::Device& device) {
-  CHECK_EQ(do_sample.size(), seeds.size());
-  sample_funcs_.reserve(do_sample.size());
-  for (bool sample : do_sample) {
-    if (sample) {
-      torch::optional<torch::Generator> generator;
-      // use global generator when seed is 0
-      // TODO: we should set seed for each request instead of for each token
-
-      sample_funcs_.emplace_back(
-          [generator = std::move(generator)](const torch::Tensor& logits) {
-            const auto probs = logits.softmax(/*dim=*/-1);
-            return torch::multinomial(probs,
-                                      /*num_samples=*/1,
-                                      /*replacement=*/false,
-                                      /*generator=*/generator);
-          });
-    } else {
-      sample_funcs_.emplace_back([](const torch::Tensor& logits) {
-        return logits.argmax(/*dim=*/-1);
-      });
-    }
-  }
-}
-
-torch::Tensor Sampler::sample(const torch::Tensor& logits) const {
-  const auto num_seqs = logits.size(0);
-  CHECK_EQ(num_seqs, static_cast<int64_t>(sample_funcs_.size()));
-
-  auto output = torch::empty(
-      {num_seqs}, torch::TensorOptions(torch::kInt64).device(logits.device()));
-  // sample logits for each sequence
-  for (int64_t i = 0; i < num_seqs; ++i) {
-    auto sample = sample_funcs_[i](logits[i]);
-    output.index_put_({i}, sample);
-  }
   return output;
+}
+
+torch::Tensor Sampler::greedy_sample(const torch::Tensor& probs) {
+  return probs.argmax(/*dim=*/-1);
+}
+
+torch::Tensor Sampler::random_sample(const torch::Tensor& probs) {
+  // return probs.multinomial(/*num_samples=*/1, /*replacement=*/false);
+  // Avoid the expensive GPU<->CPU sync done by torch::multinomial
+  auto q = torch::empty_like(probs).exponential_(/*lambd=*/1);
+  return probs.div(q).argmax(/*dim=*/-1);
 }
 
 }  // namespace llm

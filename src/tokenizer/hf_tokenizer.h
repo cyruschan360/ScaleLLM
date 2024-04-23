@@ -1,8 +1,7 @@
 #pragma once
 
-#include "sentencepiece/sentencepiece_processor.h"
 #include "tokenizer.h"
-#include "tokenizers/tokenizers.h"
+#include "huggingface/tokenizers.h"
 
 namespace llm {
 
@@ -17,7 +16,8 @@ class HFTokenizer : public Tokenizer {
   bool encode(const std::string_view& text,
               std::vector<int32_t>* ids) const override;
 
-  std::string decode(const std::vector<int32_t>& ids) const override;
+  std::string decode(const Slice<int32_t>& ids,
+                     bool skip_special_tokens) const override;
 
   size_t vocab_size() const override;
 

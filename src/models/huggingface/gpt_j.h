@@ -3,14 +3,15 @@
 #include <torch/torch.h>
 
 #include "layers/activation.h"
-#include "layers/attention_rope.h"
+#include "layers/attention/attention.h"
+#include "layers/attention/handler.h"
 #include "layers/embedding.h"
 #include "layers/linear.h"
 #include "layers/normalization.h"
 #include "memory/kv_cache.h"
-#include "models/args.h"
-#include "models/input_parameters.h"
+#include "models/model_args.h"
 #include "models/model_registry.h"
+#include "models/parameters.h"
 
 // GPTJ model compatible with huggingface weights
 
@@ -19,15 +20,14 @@ namespace llm::hf {
 class GPTJMLPImpl : public torch::nn::Module {
  public:
   GPTJMLPImpl(const ModelArgs& args,
-              const QuantizationArgs& quant_args,
+              const QuantArgs& quant_args,
               const ParallelArgs& parallel_args,
-              torch::ScalarType dtype,
-              const torch::Device& device) {
+              const torch::TensorOptions& options) {
     const int64_t hidden_size = args.hidden_size();
     const int64_t intermediate_size = args.intermediate_size();
 
-    act_ = Activation::get_act_func(args.hidden_act(), device);
-    GCHECK(act_ != nullptr);
+    act_ = Activation::get_act_func(args.hidden_act(), options.device());
+    CHECK(act_ != nullptr);
 
     // register the weight parameter
     fc_in_ = register_module("fc_in",
@@ -37,8 +37,7 @@ class GPTJMLPImpl : public torch::nn::Module {
                                                   /*gather_output=*/false,
                                                   quant_args,
                                                   parallel_args,
-                                                  dtype,
-                                                  device));
+                                                  options));
     fc_out_ = register_module("fc_out",
                               RowParallelLinear(intermediate_size,
                                                 hidden_size,
@@ -46,8 +45,7 @@ class GPTJMLPImpl : public torch::nn::Module {
                                                 /*input_is_parallelized=*/true,
                                                 quant_args,
                                                 parallel_args,
-                                                dtype,
-                                                device));
+                                                options));
   }
 
   torch::Tensor forward(torch::Tensor x) { return fc_out_(act_(fc_in_(x))); }
@@ -76,13 +74,13 @@ TORCH_MODULE(GPTJMLP);
 class GPTJAttentionImpl : public torch::nn::Module {
  public:
   GPTJAttentionImpl(const ModelArgs& args,
-                    const QuantizationArgs& quant_args,
+                    const QuantArgs& quant_args,
                     const ParallelArgs& parallel_args,
-                    torch::ScalarType dtype,
-                    const torch::Device& device) {
+                    const torch::TensorOptions& options,
+                    AttentionHandler* handler) {
     const int64_t n_local_heads = args.n_heads() / parallel_args.world_size();
     const int64_t hidden_size = args.hidden_size();
-    const int64_t head_dim = args.hidden_size() / args.n_heads();
+    const int64_t head_dim = args.head_dim();
 
     // register submodules
     qkv_proj_ = register_module("qkv_proj",
@@ -92,8 +90,7 @@ class GPTJAttentionImpl : public torch::nn::Module {
                                                      /*gather_output=*/false,
                                                      quant_args,
                                                      parallel_args,
-                                                     dtype,
-                                                     device));
+                                                     options));
 
     out_proj_ =
         register_module("out_proj",
@@ -103,24 +100,11 @@ class GPTJAttentionImpl : public torch::nn::Module {
                                           /*input_is_parallelized=*/true,
                                           quant_args,
                                           parallel_args,
-                                          dtype,
-                                          device));
+                                          options));
 
-    // initialize positional embedding
     // initialize attention
-    const float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
-    atten_ = register_module("atten",
-                             AttentionWithRoPE(n_local_heads,
-                                               n_local_heads,
-                                               head_dim,
-                                               scale,
-                                               args.rotary_dim(),
-                                               args.rope_scaling(),
-                                               args.rope_theta(),
-                                               args.max_position_embeddings(),
-                                               /*interleaved=*/true,
-                                               dtype,
-                                               device));
+    atten_ = register_module(
+        "atten", Attention(n_local_heads, n_local_heads, head_dim, handler));
   }
 
   torch::Tensor forward(torch::Tensor x,
@@ -155,28 +139,28 @@ class GPTJAttentionImpl : public torch::nn::Module {
   RowParallelLinear out_proj_{nullptr};
 
   // module members without parameters
-  AttentionWithRoPE atten_{nullptr};
+  Attention atten_{nullptr};
 };
 TORCH_MODULE(GPTJAttention);
 
 class GPTJBlockImpl : public torch::nn::Module {
  public:
   GPTJBlockImpl(const ModelArgs& args,
-                const QuantizationArgs& quant_args,
+                const QuantArgs& quant_args,
                 const ParallelArgs& parallel_args,
-                torch::ScalarType dtype,
-                const torch::Device& device) {
+                const torch::TensorOptions& options,
+                AttentionHandler* handler) {
     // register submodules
     attn_ = register_module(
-        "attn", GPTJAttention(args, quant_args, parallel_args, dtype, device));
-    mlp_ = register_module(
-        "mlp", GPTJMLP(args, quant_args, parallel_args, dtype, device));
+        "attn",
+        GPTJAttention(args, quant_args, parallel_args, options, handler));
+    mlp_ = register_module("mlp",
+                           GPTJMLP(args, quant_args, parallel_args, options));
     ln_1_ = register_module("ln_1",
                             LayerNorm(args.hidden_size(),
                                       args.layer_norm_eps(),
                                       /*bias=*/true,
-                                      dtype,
-                                      device));
+                                      options));
   }
 
   torch::Tensor forward(torch::Tensor x,
@@ -217,22 +201,23 @@ TORCH_MODULE(GPTJBlock);
 class GPTJModelImpl : public torch::nn::Module {
  public:
   GPTJModelImpl(const ModelArgs& args,
-                const QuantizationArgs& quant_args,
+                const QuantArgs& quant_args,
                 const ParallelArgs& parallel_args,
-                torch::ScalarType dtype,
-                const torch::Device& device) {
+                const torch::TensorOptions& options) {
     // register submodules
-    wte_ = register_module("wte",
-                           ParallelEmbedding(args.vocab_size(),
-                                             args.hidden_size(),
-                                             parallel_args,
-                                             dtype,
-                                             device));
+    wte_ = register_module(
+        "wte",
+        ParallelEmbedding(
+            args.vocab_size(), args.hidden_size(), parallel_args, options));
+
+    handler_ = AttentionHandler::create_handler_with_rope(
+        args, /*interleaved=*/true, options);
 
     blocks_ = register_module("h", torch::nn::ModuleList());
     layers_.reserve(args.n_layers());
     for (int32_t i = 0; i < args.n_layers(); i++) {
-      auto block = GPTJBlock(args, quant_args, parallel_args, dtype, device);
+      auto block =
+          GPTJBlock(args, quant_args, parallel_args, options, handler_.get());
       layers_.push_back(block);
       blocks_->push_back(block);
     }
@@ -240,8 +225,7 @@ class GPTJModelImpl : public torch::nn::Module {
                             LayerNorm(args.hidden_size(),
                                       args.layer_norm_eps(),
                                       /*bias=*/true,
-                                      dtype,
-                                      device));
+                                      options));
   }
 
   // tokens: [num_tokens]
@@ -251,6 +235,8 @@ class GPTJModelImpl : public torch::nn::Module {
                         std::vector<KVCache>& kv_caches,
                         const InputParameters& input_params) {
     auto h = wte_(tokens);
+
+    // TODO: set working space for attention handler
     for (size_t i = 0; i < layers_.size(); i++) {
       auto& layer = layers_[i];
       h = layer(h, positions, kv_caches[i], input_params);
@@ -282,6 +268,9 @@ class GPTJModelImpl : public torch::nn::Module {
   // parameter members, must be registered
   ParallelEmbedding wte_{nullptr};
 
+  // attention handler
+  std::unique_ptr<AttentionHandler> handler_{nullptr};
+
   torch::nn::ModuleList blocks_{nullptr};
   // hold same data but different type as blocks_ to avoid type cast
   std::vector<GPTJBlock> layers_;
@@ -293,14 +282,12 @@ TORCH_MODULE(GPTJModel);
 class GPTJForCausalLMImpl : public torch::nn::Module {
  public:
   GPTJForCausalLMImpl(const ModelArgs& args,
-                      const QuantizationArgs& quant_args,
+                      const QuantArgs& quant_args,
                       const ParallelArgs& parallel_args,
-                      torch::ScalarType dtype,
-                      const torch::Device& device) {
+                      const torch::TensorOptions& options) {
     // register submodules
     transformer_ = register_module(
-        "transformer",
-        GPTJModel(args, quant_args, parallel_args, dtype, device));
+        "transformer", GPTJModel(args, quant_args, parallel_args, options));
 
     lm_head_ = register_module("lm_head",
                                ColumnParallelLinear(args.hidden_size(),
@@ -308,19 +295,29 @@ class GPTJForCausalLMImpl : public torch::nn::Module {
                                                     /*bias=*/true,
                                                     /*gather_output=*/true,
                                                     parallel_args,
-                                                    dtype,
-                                                    device));
+                                                    options));
   }
 
   // tokens: [num_tokens]
   // positions: [num_tokens] token pos in the sequence
-  torch::Tensor forward(torch::Tensor tokens,
-                        torch::Tensor positions,
+  // returns: [num_tokens, hidden_size]
+  torch::Tensor forward(const torch::Tensor& tokens,
+                        const torch::Tensor& positions,
                         std::vector<KVCache>& kv_caches,
                         const InputParameters& input_params) {
-    auto h = transformer_(tokens, positions, kv_caches, input_params);
-    // select last token for each sequence
-    h = h.index_select(/*dim=*/0, input_params.last_token_indicies);
+    return transformer_(tokens, positions, kv_caches, input_params);
+  }
+
+  // hidden_states: [num_tokens, hidden_size]
+  // seleted_idxes: [num_tokens]
+  // returns: [num_tokens, vocab_size]
+  torch::Tensor logits(const torch::Tensor& hidden_states,
+                       const torch::Tensor& seleted_idxes) {
+    // select tokens if provided
+    auto h = hidden_states;
+    if (seleted_idxes.defined()) {
+      h = h.index_select(/*dim=*/0, seleted_idxes);
+    }
     return lm_head_(h);
   }
 
@@ -351,6 +348,7 @@ REGISTER_MODEL_ARGS(gptj, [&] {
   // https://huggingface.co/EleutherAI/gpt-j-6b/blob/main/config.json set
   // default values for args explicitly with values from:
   // https://github.com/huggingface/transformers/blob/main/src/transformers/models/gptj/configuration_gptj.py#L98
+  LOAD_ARG_OR(model_type, "model_type", "gptj");
   LOAD_ARG_OR(dtype, "torch_dtype", "");
   LOAD_ARG_OR(vocab_size, "vocab_size", 50400);
   LOAD_ARG_OR(hidden_size, "n_embd", 4096);
@@ -366,6 +364,10 @@ REGISTER_MODEL_ARGS(gptj, [&] {
   LOAD_ARG_OR_FUNC(intermediate_size, "n_inner", [&] {
     // set it to 4 times n_embd
     return args->hidden_size() * 4;
+  });
+
+  LOAD_ARG_OR_FUNC(head_dim, "head_dim", [&] {
+    return args->hidden_size() / args->n_heads();
   });
 });
 }  // namespace llm::hf
